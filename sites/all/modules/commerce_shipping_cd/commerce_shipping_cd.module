@@ -1,0 +1,204 @@
+<?php
+/**
+ * Implements hook_menu().
+ */
+function commerce_shipping_cd_menu() {
+  $items['admin/commerce/config/shipping/custom-details'] = array(
+    'title' => 'Custom details',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('commerce_shipping_cd_form'),
+    'access arguments' => array('edit administer shipping'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 50,
+  );
+
+  return $items;
+}
+/**
+* Custom shipping settings form.
+*/
+function commerce_shipping_cd_form($form, &$form_state) {
+  $form = array();
+  foreach (commerce_customer_profile_types() as $type => $profile_type) {
+    $options[$profile_type['type']] = $profile_type['name'];
+  }
+
+  foreach (commerce_shipping_services() as $name => $shipping_service) {
+    $form[$name . '_details_form'] = array(
+      '#title' => $name,
+      '#type' => 'select',
+      "#empty_option"=>t('- None -'),
+      '#options' => $options,
+      '#default_value' => variable_get($name . '_details_form',''),
+    );
+  }
+  return system_settings_form($form);
+  //return $form;
+}
+
+/**
+* Implements hook_form_alter();
+*/
+function commerce_shipping_cd_form_alter(&$form, &$form_state, $form_id) {
+  if (substr($form_id, 0, 17) == 'commerce_checkout' && isset($form['commerce_shipping'])) {
+    global $user;
+    $order = commerce_cart_order_load($user->uid);
+    // Set a new validator to allow to update the values before submitting.
+    $form['commerce_shipping']['#element_validate'] = array('commerce_shipping_cd_shipping_validate');
+
+    // If new shipping variation is selected.
+    if (isset($form_state['values']['commerce_shipping']['shipping_service'])) {
+      $active_service = $form_state['values']['commerce_shipping']['shipping_service'];
+       // Get customer type to load.
+      $customer_type = variable_get($active_service . '_details_form', '');
+
+    }
+    // If default shipping variation is loaded.
+    if (isset($form['commerce_shipping']['shipping_service']['#default_value'])) {
+      $default_service = $form['commerce_shipping']['shipping_service']['#default_value'];
+        // Get customer type to load.
+        $customer_type = variable_get($default_service . '_details_form', '');
+    }
+    // if details form is set.
+    if ($customer_type != '') {
+      $pane_id = "customer_profile_" . $customer_type;
+    }
+
+    if (isset($active_service)) {
+      if ($active_service) {
+        if (isset($pane_id)) {
+           $form['commerce_shipping']['service_details'][$pane_id] = _commerce_shipping_cd_load_pane($form, $form_state, $pane_id, $order);
+        }
+      }
+      // If not actice service.
+      else {
+        // We need to unset it, because people tend to change their minds sometimes.
+        unset($form['commerce_shipping']['service_details'][$pane_id]);
+      }
+    }
+    else {
+      // If our service is the default value we need to show the shipping pane right away.
+      if ($default_service) {
+        if (isset($pane_id)) {
+          $form['commerce_shipping']['service_details'][$pane_id] =
+            _commerce_shipping_cd_load_pane($form, $form_state, $pane_id, $order);
+        }
+      }
+      // We don't want the shipping pane to show at its original place.
+    }
+
+    foreach(commerce_shipping_services() as $name => $shipping_service) {
+
+
+      $form["customer_profile_" . variable_get($name . '_details_form','')]['#access'] = FALSE;
+    }
+  }
+}
+
+/**
+* Custom validation which replaces the form values with new ones.
+*/
+function commerce_shipping_cd_shipping_validate($element, &$form_state, $form) {
+
+  $active_service = $form_state['values']['commerce_shipping']['shipping_service'];
+  $customer_type = variable_get($active_service . '_details_form', '');
+  if (!empty($customer_type)) {
+    $pane_id = 'customer_profile_' . $customer_type;
+    // If there is no available shipping address we use the one from billing.
+    if(isset($form_state['values'][$pane_id]
+        ['commerce_customer_address']['und'][0])) {
+      $address = $form_state['values'][$pane_id]
+        ['commerce_customer_address']['und'][0];
+      $address['element_key'] = $form_state['values'][$pane_id]
+        ['commerce_customer_address']['und'][0]['element_key'];
+
+      $form_state['values'][$pane_id]
+        ['commerce_customer_address']['und'][0] = $address;
+    }
+    // Set the shipping back to it original place in the form
+    else {
+      if (isset($pane_id)) {
+        $form[$pane_id] = $form['commerce_shipping']['service_details'][$pane_id];
+      }
+    }
+  }
+}
+
+/**
+ * Helper function to load shopping cart pane.
+ * @param  [type] $form       default form element.
+ * @param  [type] $form_state Form state from form.
+ * @param  [type] $pane_id    Pane/field id.
+ * @param  [type] $order      Current user order.
+ * @return [type]             Return current pane.
+ */
+function _commerce_shipping_cd_load_pane($form, $form_state, $pane_id, $order) {
+  $checkout_pane['pane_id'] = $pane_id;
+  if (!function_exists('commerce_customer_profile_pane_checkout_form')) {
+    module_load_include('inc', 'commerce_customer', 'includes/commerce_customer.checkout_pane');
+  }
+  return commerce_customer_profile_pane_checkout_form($form, $form_state, $checkout_pane, $order);
+}
+
+/**
+ * Allows modules to alter checkout panes defined by other modules.
+ *
+ * @param $checkout_panes
+ *   The array of checkout pane arrays.
+ *
+ * @see hook_commerce_checkout_pane_info()
+ */
+function commerce_shipping_commerce_checkout_pane_info_alter(&$checkout_pane) {
+  if (arg(2) != 'review') {
+    return;
+  }
+  $order = commerce_order_load(arg(1));
+  $order_wrapper = entity_metadata_wrapper('commerce_order', $order);
+  // Loop over all the line items on the order.
+  foreach($order_wrapper->commerce_line_items as $delta => $line_item_wrapper) {
+  // If the current line item is a shipping line item and the condition either
+  // doesn't care about the service or the service name matches, return TRUE.
+    if ($line_item_wrapper->type->value() == 'shipping') {
+      $service = $line_item_wrapper->commerce_shipping_service->value();
+    }
+  }
+  foreach(commerce_shipping_services() as $name => $shipping_service) {
+    if ($name != $service) {
+      $checkout_pane['customer_profile_' . variable_get($name . '_details_form')]['review'] = 0;
+    }
+  }
+}
+/**
+* Implements hook_commerce_checkout_complete().
+*/
+function commerce_shipping_cd_commerce_checkout_complete($order) {
+  $fields = array();
+  foreach(commerce_shipping_services() as $name => $shipping_service) {
+    $fields[$name] = 'commerce_customer_' . variable_get($name . '_details_form');
+  }
+  $order_wrapper = entity_metadata_wrapper('commerce_order', $order);
+  // Loop over all the line items on the order.
+  foreach ($order_wrapper->commerce_line_items as $delta => $line_item_wrapper) {
+  // If the current line item is a shipping line item and the condition either
+  // doesn't care about the service or the service name matches, return TRUE.
+    if ($line_item_wrapper->type->value() == 'shipping') {
+      $service = $line_item_wrapper->commerce_shipping_service->value();
+    }
+  }
+ commerce_shipping_cd_unset_unused_shipping_data($order_wrapper, $service, $fields);
+}
+/**
+ * Unset unused shipping data.
+ * @param  [type] $order   order_wrapper wrapped with entity_metadata_wrapper.
+ * @param  [type] $service Shipping service id.
+ * @param  [type] $fields fields to compare.
+ */
+function commerce_shipping_cd_unset_unused_shipping_data($order, $service, $fields) {
+  foreach($fields as $key => $field) {
+    $service_details = variable_get($key . '_details_form');
+    if ($field != $fields[$service] && !empty($service_details)) {
+      $order->$field = NULL;
+    }
+  }
+  $order->save();
+}

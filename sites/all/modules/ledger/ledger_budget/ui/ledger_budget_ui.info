@@ -1,0 +1,20 @@
+name = "Budget UI"
+description = "Exposes a default UI for Budgets"
+core = 7.x
+package = "Ledger"
+configure = admin/config/ledger/budget
+dependencies[] = ledger_book
+dependencies[] = ledger_account
+dependencies[] = ledger_budget
+dependencies[] = ledger_ui
+dependencies[] = ledger_book_ui
+dependencies[] = ledger_account_ui
+dependencies[] = views
+
+
+; Information added by Drupal.org packaging script on 2014-11-12
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "ledger"
+datestamp = "1415802186"
+

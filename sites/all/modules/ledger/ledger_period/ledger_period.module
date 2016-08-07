@@ -1,0 +1,437 @@
+<?php
+
+/**
+ * @file
+ * Ledger Period
+ */
+
+/***************************************************************
+ * Drupal core hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_menu().
+ */
+function ledger_period_menu() {
+
+  // Period settings form.
+  $items['admin/config/ledger/period'] = array(
+    'title' => 'Accounting period',
+    'description' => 'Configure accounting period and balance calculation settings.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ledger_period_settings_form'),
+    'access arguments' => array('administer ledger'),
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_field_access().
+ */
+function ledger_period_field_access($op, $field, $entity_type, $entity, $account) {
+
+  // Prevent edit access to the balance fields.
+  if ($field['field_name'] == 'ledger_balance' && $op == 'edit') {
+    return FALSE;
+  }
+}
+
+/**
+ * Implements hook_[entity]_insert().
+ */
+function ledger_period_ledger_account_type_insert($account_type) {
+
+  // When a new account type is created, add the Balance field to it.
+  ledger_period_configure_balance_field('ledger_account', $account_type->type);
+}
+
+/**
+ * Implements hook_[entity]_insert().
+ */
+function ledger_period_ledger_account_entry_insert($account_entry) {
+
+  // Check to see if account entry balance calculation is enabled.
+  if (variable_get('ledger_period_balance_calculate', 1)) {
+
+    // Load the transaction to get the timestamp.
+    $transaction = ledger_transaction_load($account_entry->tid);
+
+    // Recalculate the account entry balances when a new account entry is inserted..
+    ledger_period_calculate_balances($account_entry->aid, $transaction->timestamp);
+  }
+}
+
+/**
+ * Implements hook_[entity]_update().
+ */
+function ledger_period_ledger_account_entry_update($account_entry) {
+
+  // Check to see if account entry balance calculation is enabled.
+  if (variable_get('ledger_period_balance_calculate', 1)) {
+
+    // Load the transaction to get the timestamp.
+    $transaction = ledger_transaction_load($account_entry->tid);
+
+    // Start a list of accounts to recalculate account entry balances in.
+    $aids = array();
+
+    // If the value of the account entry is changed, recalculate the account entry balances in that account.
+    if ($account_entry->value != $account_entry->original->value) {
+      $aids[$account_entry->aid] = $account_entry->aid;
+    }
+
+    // If the account entry is moved to another account, recalculate the account entry balances in both accounts.
+    if ($account_entry->aid != $account_entry->original->aid) {
+      $aids[$account_entry->aid] = $account_entry->aid;
+      $aids[$account_entry->aid] = $account_entry->original->aid;
+    }
+
+    // Recalculate account entry balances for the specified accounts.
+    foreach ($aids as $aid) {
+      ledger_period_calculate_balances($aid, $transaction->timestamp);
+    }
+  }
+}
+
+/**
+ * Implements hook_[entity]_delete().
+ */
+function ledger_period_ledger_account_entry_delete($account_entry) {
+
+  // Check to see if account entry balance calculation is enabled.
+  if (variable_get('ledger_period_balance_calculate', 1)) {
+
+    // Load the transaction to get the timestamp.
+    $transaction = ledger_transaction_load($account_entry->tid);
+
+    // Recalculate the account entry balances when an account entry is deleted.
+    ledger_period_calculate_balances($account_entry->aid, $transaction->timestamp);
+  }
+}
+
+/**
+ * Implements hook_[entity]_update().
+ */
+function ledger_period_ledger_transaction_update($transaction) {
+
+  // Check to see if account entry balance calculation is enabled.
+  if (variable_get('ledger_period_balance_calculate', 1)) {
+
+    // If the transaction timestamp changes, recalculate balances in all
+    // accounts starting at the earlier timestamp.
+    if ($transaction->original->timestamp != $transaction->timestamp) {
+
+      // Figure out which timestamp is earlier.
+      $earlier_timestamp = 0;
+      if ($transaction->original->timestamp < $transaction->timestamp) {
+        $earlier_timestamp = $transaction->original->timestamp;
+      }
+      elseif ($transaction->original->timestamp > $transaction->timestamp) {
+        $earlier_timestamp = $transaction->timestamp;
+      }
+
+      // Compile a list of accounts to recalculate. We do this first in case
+      // there are multiple account entries in the same account.
+      $aids = array();
+      if (!empty($transaction->account_entries)) {
+        foreach ($transaction->account_entries as $account_entry) {
+          $aids[$account_entry->aid] = $account_entry->aid;
+        }
+      }
+
+      // Recalculate account balances.
+      foreach ($aids as $aid) {
+        ledger_period_calculate_balances($aid, $earlier_timestamp);
+      }
+    }
+  }
+}
+
+/***************************************************************
+ * Views API hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_views_api().
+ */
+function ledger_period_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'ledger_period') . '/views',
+  );
+}
+
+/***************************************************************
+ * Period settings form
+ * *************************************************************/
+
+/**
+ * Form callback: ledger period settings form.
+ */
+function ledger_period_settings_form($form, &$form_state) {
+
+  // Sign reverse balance settings.
+  $form['ledger_period_sign_reverse'] = array(
+    '#type' => 'radios',
+    '#title' => t('Sign-reverse account balances'),
+    '#description' => t('Ledger stores credits to Liability, Equity, and Income accounts as negative numbers, to aid in balancing equations. You can control whether these accounts should be displayed with positive or negative balances with this setting.'),
+    '#options' => array(
+      '0' => 'None - display the balance exactly as it is stored.',
+      '1' => 'Reverse the sign on Liability, Equity, and Income account balances.',
+      '2' => 'Reverse the sign on Income and Expense account balances.',
+    ),
+    '#default_value' => variable_get('ledger_period_sign_reverse', 1),
+    '#required' => TRUE,
+  );
+
+  return system_settings_form($form);
+}
+
+/***************************************************************
+ * Utility functions.
+ * *************************************************************/
+
+/**
+ * Update account entry balances.
+ *
+ * @param $aid
+ *   The id of the account to update balances for. If none is provided, all accounts will be updated.
+ * @param $timestamp
+ *   The timestamp to start with. All account entries with a timestamp greater than or equal to will be updated.
+ *   If none is provided, all account entries will be updated.
+ */
+function ledger_period_calculate_balances($aid = NULL, $timestamp = 0) {
+
+  // If a specific account id is provided, recalculate the balances for account entries in it.
+  if ($aid) {
+
+    // Initialize the balance as a fraction.
+    $balance = fraction();
+
+    // Start with the last balance before the specified timestamp (if necessary).
+    if ($timestamp) {
+
+      // Load the last account entry before the specified timestamp.
+      $query = db_select('ledger_account_entry', 'e');
+      $query->addField('e', 'eid');
+      $query->join('ledger_transaction', 't', 'e.tid = t.tid');
+      $query->condition('e.aid', $aid);
+      $query->condition('t.timestamp', $timestamp, '<');
+      $query->orderby('t.timestamp', 'DESC');
+      $query->range(0, 1);  // Only return the first result.
+      $result = $query->execute();
+      $eid = $result->fetchField(0);
+
+      // Load the account entry, if an id was returned.
+      if (!empty($eid)) {
+        $account_entry = ledger_account_entry_load($eid, TRUE);
+      }
+
+      // If there is no balance value stored, clear the timestamp so that
+      // the balances for the whole account are recalculated.
+      if (empty($account_entry->ledger_balance[LANGUAGE_NONE])) {
+        $timestamp = 0;
+      }
+
+      // Otherwise, load the balance as a fraction.
+      else {
+        $balance = $account_entry->ledger_balance[LANGUAGE_NONE][0]['fraction'];
+      }
+    }
+
+    // Load all account entries for the account.
+    $query = db_select('ledger_account_entry', 'e');
+    $query->addField('e', 'eid');
+    $query->join('ledger_transaction', 't', 'e.tid = t.tid');
+    $query->condition('e.aid', $aid);
+    $query->condition('t.timestamp', $timestamp, '>=');
+    $query->orderby('t.timestamp', 'ASC');
+    $query->orderby('e.eid', 'ASC');
+    $result = $query->execute();
+
+    // Loop through the results.
+    foreach ($result as $row) {
+
+      // Load the account entry, if available.
+      if (!empty($row->eid)) {
+        $account_entry = ledger_account_entry_load($row->eid, TRUE);
+      }
+
+      // If the account entry has a value...
+      if (!empty($account_entry->ledger_value[LANGUAGE_NONE])) {
+
+        // Add the entry's value to the balance and reduce.
+        $balance->add($account_entry->ledger_value[LANGUAGE_NONE][0]['fraction'])->reduce();
+
+        // Set the balance on the account entry.
+        $account_entry->ledger_balance[LANGUAGE_NONE][0] = array(
+          'numerator' => $balance->getNumerator(),
+          'denominator' => $balance->getDenominator(),
+        );
+
+        // Save the account entry.
+        ledger_account_entry_save($account_entry);
+      }
+    }
+
+    // Load the account entity, set the final balance, and save.
+    $account = ledger_account_load($aid, TRUE);
+    $account->ledger_balance[LANGUAGE_NONE][0] = array(
+      'numerator' => $balance->getNumerator(),
+      'denominator' => $balance->getDenominator(),
+    );
+    ledger_account_save($account);
+  }
+
+  // If no account id is provided, load a list of all account ids and recalculate all of them by calling this function again.
+  else {
+
+    // Load all the account ids.
+    $query = db_select('ledger_account', 'a');
+    $query->addField('a', 'aid');
+    $result = $query->execute();
+
+    // Loop through all the account ids and recalculate the balances for each.
+    foreach ($result as $account) {
+      ledger_period_calculate_balances($account->aid);
+    }
+  }
+}
+
+/**
+ * Reverses the sign of a value according to the ledger_period_sign_reverse variable.
+ *
+ * @param &$value
+ *   The value to reverse, passed by reference.
+ * @param $account_type
+ *   The account type.
+ *
+ * @return
+ *   Returns the original $value, after reversing the sign if necessary.
+ */
+function ledger_period_sign_reverse(&$value, $account_type) {
+
+  // Load the sign reversing variable.
+  $reverse = variable_get('ledger_period_sign_reverse', 1);
+
+  // Switch through the variable options.
+  if ($reverse) {
+    switch ($reverse) {
+
+      // If the variable is set to 1, switch the sign on liability, equity, and income accounts.
+      case '1':
+        if ($account_type == 'liability' || $account_type == 'equity' || $account_type == 'income') {
+          $value = $value * -1;
+        }
+        break;
+
+      // If the variable is set to 2, switch the sign on income and expense accounts.
+      case '2':
+        if ($account_type == 'income' || $account_type == 'expense') {
+          $value = $value * -1;
+        }
+        break;
+    }
+  }
+}
+
+/***************************************************************
+ * Configuration functions.
+ * *************************************************************/
+
+/**
+ * Configure all account types.
+ */
+function ledger_period_configure_account_types() {
+
+  // Add the balance field to each account bundle.
+  foreach (ledger_account_type_get_names() as $bundle => $name) {
+    ledger_period_configure_balance_field_instance('ledger_account', $bundle);
+  }
+}
+
+/**
+ * Configure all account entry types.
+ */
+function ledger_period_configure_account_entry_types() {
+
+  // Add the balance field to account entries.
+  ledger_period_configure_balance_field_instance('ledger_account_entry', 'ledger_account_entry');
+}
+
+/**
+ * Create ledger_balance field.
+ */
+function ledger_period_configure_balance_field() {
+
+  // If the fraction field type isn't found, clear the Field cache.
+  if (!field_info_field_types('fraction')) {
+    field_cache_clear();
+  }
+
+  // Load field and instance information about existing fields.
+  $field_name = 'ledger_balance';
+  $field = field_info_field($field_name);
+
+  // If the field doesn't exist, create it.
+  if (empty($field)) {
+    $field = array(
+      'field_name' => $field_name,
+      'type' => 'fraction',
+      'cardinality' => 1,
+      'entity_types' => array('ledger_account', 'ledger_account_entry'),
+      'translatable' => FALSE,
+      'locked' => TRUE,
+    );
+    $field = field_create_field($field);
+  }
+
+  // Return the field name.
+  return $field_name;
+}
+
+/**
+ * Add Balance field to a bundle.
+ */
+function ledger_period_configure_balance_field_instance($type, $bundle) {
+
+  // Create the ledger_balance field, if necessary.
+  $field_name = ledger_period_configure_balance_field();
+
+  // Look up existing instance information.
+  $instance = field_info_instance($type, $field_name, $bundle);
+
+  // If the instance doesn't exist, create it.
+  if (empty($instance)) {
+    $instance = array(
+      'field_name' => $field_name,
+      'entity_type' => $type,
+      'bundle' => $bundle,
+      'label' => t('Balance'),
+      'settings' => array(),
+      'widget' => array(
+        'type' => 'fraction_decimal',
+        'settings' => array(
+          'precision' => 2,
+        ),
+        'weight' => 100,
+      ),
+      'display' => array(
+        'default' => array(
+          'label' => 'hidden',
+          'type' => 'fraction_decimal',
+          'settings' => array(
+            'precision' => 2,
+            'auto_precision' => TRUE,
+          ),
+          'weight' => 100,
+        ),
+      ),
+    );
+
+    // Create the field instance.
+    field_create_instance($instance);
+  }
+}
+

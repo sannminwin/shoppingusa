@@ -1,0 +1,13 @@
+name = Commerce shipping custom details
+core = 7.x
+version = 7.x-1.x-dev
+dependencies[] = commerce_shipping_ui (7.x-2.x)
+dependencies[] = commerce_checkout
+package = Commerce (shipping)
+
+; Information added by Drupal.org packaging script on 2014-10-10
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "commerce_shipping_cd"
+datestamp = "1412942271"
+

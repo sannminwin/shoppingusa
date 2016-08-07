@@ -1,0 +1,12 @@
+name = "Ledger"
+description = "Defines features and functions common to the Ledger modules. Must be enabled to uninstall other Ledger modules."
+core = 7.x
+package = "Ledger"
+
+
+; Information added by Drupal.org packaging script on 2014-11-12
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "ledger"
+datestamp = "1415802186"
+

@@ -1,0 +1,22 @@
+name = "Budget"
+description = "Defines the Ledger Budget entity type and Views integration."
+core = 7.x
+package = "Ledger"
+dependencies[] = entity
+dependencies[] = ledger
+dependencies[] = ledger_book
+dependencies[] = fraction
+
+files[] = views/handlers/ledger_budget_handler_field_link_delete.inc
+files[] = views/handlers/ledger_budget_handler_field_link_edit.inc
+files[] = views/handlers/ledger_budget_handler_field_link.inc
+files[] = views/handlers/ledger_budget_handler_field_operations.inc
+files[] = views/handlers/ledger_budget_handler_field.inc
+
+
+; Information added by Drupal.org packaging script on 2014-11-12
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "ledger"
+datestamp = "1415802186"
+

@@ -1,0 +1,589 @@
+<?php
+
+/**
+ * @file
+ * Ledger Account
+ */
+
+/***************************************************************
+ * Drupal core hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_permission().
+ */
+function ledger_account_permission() {
+
+  // Add granular entity permissions via ledger's helper function.
+  return ledger_entity_access_permissions('ledger_account');
+}
+
+/**
+ * Implements hook_entity_info().
+ */
+function ledger_account_entity_info() {
+  $entities['ledger_account'] = array(
+    'label' => t('Ledger Account'),
+    'label plural' => t('Ledger Accounts'),
+    'description' => t('A Ledger account.'),
+    'entity class' => 'LedgerAccount',
+    'controller class' => 'LedgerAccountController',
+    'base table' => 'ledger_account',
+    'fieldable' => TRUE,
+    'entity keys' => array(
+      'id' => 'aid',
+      'bundle' => 'type',
+    ),
+    'label callback' => 'entity_class_label',
+    'uri callback' => 'entity_class_uri',
+    'module' => 'ledger_account',
+    'access callback' => 'ledger_account_access',
+    'bundles' => array(),
+    'bundle keys' => array(
+      'bundle' => 'type',
+    ),
+  );
+  $entities['ledger_account_type'] = array(
+    'label' => t('Ledger Account Type'),
+    'label plural' => t('Ledger Account Types'),
+    'description' => t('A Ledger account type.'),
+    'entity class' => 'Entity',
+    'controller class' => 'LedgerAccountTypeController',
+    'base table' => 'ledger_account_type',
+    'fieldable' => FALSE,
+    'bundle of' => 'ledger_account',
+    'exportable' => TRUE,
+    'entity keys' => array(
+      'id' => 'id',
+      'name' => 'type',
+      'label' => 'label',
+    ),
+  );
+
+  // Add bundle info but bypass entity_load() as we cannot use it here.
+  $types = db_select('ledger_account_type', 'at')
+    ->fields('at')
+    ->execute()
+    ->fetchAllAssoc('type');
+  foreach ($types as $name => $type) {
+    $entities['ledger_account']['bundles'][$name] = array(
+      'label' => $type->label,
+    );
+  }
+
+  return $entities;
+}
+
+/***************************************************************
+ * Ledger hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_ledger_ownership().
+ */
+function ledger_account_ledger_ownership($account, $user) {
+
+  // If the account book id is empty, bail.
+  if (empty($account->bid)) {
+    return;
+  }
+
+  // Load the account's book.
+  $book = ledger_book_load($account->bid);
+
+  // Defer to the book module's ownership function.
+  return ledger_book_ledger_ownership($book, $user);
+}
+
+/***************************************************************
+ * Views API hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_views_api().
+ */
+function ledger_account_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'ledger_account') . '/views',
+  );
+}
+
+/***************************************************************
+ * Ledger Account class and functions
+ * *************************************************************/
+
+/**
+ * The class for LedgerAccount entities.
+ */
+class LedgerAccount extends Entity {
+
+  public function __construct($values = array()) {
+    parent::__construct($values, 'ledger_account');
+  }
+
+  protected function defaultLabel() {
+    return t('@name', array('@name' => $this->name));
+  }
+
+  protected function defaultUri() {
+    return array('path' => 'ledger/account/' . $this->aid);
+  }
+}
+
+/**
+ * The controller for LedgerAccount entities
+ */
+class LedgerAccountController extends EntityAPIController {
+
+  /**
+   * Create an account - we first set up the values that are specific
+   * to our ledger_account schema but then also go through the EntityAPIController
+   * function.
+   *
+   * @param $values
+   *   Values passed in.
+   *
+   * @return
+   *   An account object with all default fields initialized.
+   */
+  public function create(array $values = array()) {
+
+    // Add values that are specific to our account
+    $values += array(
+      'aid' => '',
+      'pid' => 0,
+      'bid' => 0,
+      'name' => '',
+      'description' => '',
+      'type' => '',
+    );
+
+    $account = parent::create($values);
+    return $account;
+  }
+
+  /**
+   * Delete accounts.
+   *
+   * @param $db_transaction
+   *   Optionally a DatabaseTransaction object to use. Allows overrides to pass
+   *   in their transaction object.
+   */
+  public function delete($ids, DatabaseTransaction $db_transaction = NULL) {
+
+    // If these accounts were parents to other accounts, we need to remove their IDs from the parent column in the database.
+    if (!empty($ids)) {
+      foreach ($ids as $id) {
+        db_update('ledger_account')
+          ->fields(array(
+            'pid' => 0,
+          ))
+          ->condition('pid', $id, '=')
+          ->execute();
+      }
+    }
+
+    parent::delete($ids, $db_transaction);
+  }
+}
+
+/**
+ * Access callback for ledger entities.
+ *
+ * @param $op
+ *   The operation being performed. One of 'view', 'update', 'create', 'delete'.
+ * @param $entity
+ *   Optionally a specific ledger entity to check.
+ * @param $account
+ *   The user to check for. Leave it to NULL to check for the global user.
+ *
+ * @return boolean
+ *   Whether access is allowed or not.
+ */
+function ledger_account_access($op, $entity = NULL, $account = NULL) {
+  return ledger_entity_access($op, $entity, $account, 'ledger_account');
+}
+
+/**
+ * Returns a title for the account.
+ * This is a recursive function that also returns the names of parent accounts.
+ * It includes logic to avoid infinite recursion.
+ *
+ * @param $account
+ *   A ledger account object.
+ *
+ * @return
+ *   A string that represents the account title.
+ */
+function ledger_account_title($account) {
+
+  // A static array for storing the ids of parent accounts that are loaded recursively. This is used to ensure we don't enter a recursive loop.
+  static $parents = array();
+
+  // Add the current account id to the list of parents. This prevents the account name from appearing twice in recursive accounts, which is not necessary, but hey why not?
+  $parents[] = $account->aid;
+
+  // If the account has a parent, load it.
+  if ($account->pid) {
+
+    // Check to see if the parent has been loaded previously. If so, don't continue.
+    if (!in_array($account->pid, $parents)) {
+      // Add the parent account id to the static array of ids.
+      $parents[] = $account->pid;
+
+      // Load the parent account and retrieve it's title (recursively).
+      $parent_account = ledger_account_load($account->pid);
+      $parent_title = ledger_account_title($parent_account);
+
+      // Return the account title along with its parents', separated by colons.
+      return $parent_title . ':' . $account->name;
+    }
+  }
+
+  // Reset the static array of parent ids.
+  $parents = array();
+
+  // Return the account name.
+  return $account->name;
+}
+
+/**
+ * Returns an initialized account object.
+ *
+ * @return
+ *   An account object with all default fields initialized.
+ */
+function ledger_account_new($values = array()) {
+  return entity_get_controller('ledger_account')->create($values);
+}
+
+/**
+ * Loads an account by ID.
+ */
+function ledger_account_load($aid, $reset = FALSE) {
+  $accounts = ledger_account_load_multiple(array($aid), array(), $reset);
+  return $accounts ? reset($accounts) : FALSE;
+}
+
+/**
+ * Loads multiple accounts by ID or based on a set of matching conditions.
+ *
+ * @see entity_load()
+ *
+ * @param $account_ids
+ *   An array of account IDs.
+ * @param $conditions
+ *   An array of conditions on the {ledger_account} table in the form
+ *     'field' => $value.
+ * @param $reset
+ *   Whether to reset the internal account loading cache.
+ *
+ * @return
+ *   An array of account objects indexed by aid.
+ */
+function ledger_account_load_multiple($account_ids = array(), $conditions = array(), $reset = FALSE) {
+  return entity_load('ledger_account', $account_ids, $conditions, $reset);
+}
+
+/**
+ * Saves an account to the database.
+ *
+ * @param $account
+ *   The account object.
+ */
+function ledger_account_save($account) {
+  return entity_get_controller('ledger_account')->save($account);
+}
+
+/**
+ * Deletes an account by ID.
+ *
+ * @param $aid
+ *   The ID of the account to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function ledger_account_delete($aid) {
+  return ledger_account_delete_multiple(array($aid));
+}
+
+/**
+ * Deletes multiple accounts by ID.
+ *
+ * @param $aids
+ *   An array of account IDs to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function ledger_account_delete_multiple($aids) {
+  return entity_get_controller('ledger_account')->delete($aids);
+}
+
+/***************************************************************
+ * Account type class and functions.
+ * *************************************************************/
+
+/**
+ * The controller for LedgerAccount entities
+ */
+class LedgerAccountTypeController extends EntityAPIControllerExportable {
+  public function __construct($entityType) {
+    parent::__construct($entityType);
+  }
+
+  /**
+   * Create an account type - we first set up the values that are specific
+   * to our ledger_account_type schema but then also go through the EntityAPIController
+   * function.
+   *
+   * @param $values
+   *   Values passed in.
+   *
+   * @return
+   *   An account type object with all default fields initialized.
+   */
+  public function create(array $values = array()) {
+
+    // Add values that are specific to our account
+    $values += array(
+      'id' => '',
+      'type' => '',
+      'label' => '',
+      'fundamental' => '',
+    );
+
+    $account_type = parent::create($values);
+    return $account_type;
+  }
+}
+
+/**
+ * Returns an initialized account type object.
+ *
+ * @return
+ *   An account type object with all default fields initialized.
+ */
+function ledger_account_type_new($values = array()) {
+  return entity_get_controller('ledger_account_type')->create($values);
+}
+
+/**
+ * Menu argument loader; Load a ledger account type by string.
+ *
+ * @param $type
+ *   The machine-readable name of a account type to load.
+ * @return
+ *   A account type array or FALSE if $name does not exist.
+ */
+function ledger_account_type_load($type) {
+  return ledger_account_get_types($type);
+}
+
+/**
+ * Saves an account type to the database.
+ *
+ * @param $account_type
+ *   The account type object.
+ */
+function ledger_account_type_save($account_type) {
+  return entity_get_controller('ledger_account_type')->save($account_type);
+}
+
+/**
+ * Gets a single account type label, based on it's machine name.
+ */
+function ledger_account_type_label($type) {
+  $account_type = ledger_account_get_types($type);
+  return $account_type->label;
+}
+
+/**
+ * Gets an array of all account type names, keyed by type name.
+ */
+function ledger_account_type_get_names() {
+  $account_types = array();
+  foreach (ledger_account_get_types() as $type => $account_type) {
+    $account_types[$type] = $account_type->label;
+  }
+  return $account_types;
+}
+
+/**
+ * Gets an array of all account types, keyed by the type name.
+ *
+ * @param $type
+ *   If set, the type with the given name is returned.
+ * @return
+ *   Depending whether $type is set, an array of account types or a single one.
+ */
+function ledger_account_get_types($type = NULL) {
+  $account_types = entity_load_multiple_by_name('ledger_account_type', isset($type) ? array($type) : FALSE);
+  return isset($type) ? reset($account_types) : $account_types;
+}
+
+
+/***************************************************************
+ * Account helper functions.
+ * *************************************************************/
+
+/**
+ * Create a hierarchical representation of accounts. This function is modeled after Drupal's taxonomy_get_tree().
+ *
+ * @param book
+ *   The book id to limit accounts to. Required.
+ * @param $parent
+ *   The account ID under which to generate the tree. If 0, generate the tree
+ *   for all accounts.
+ * @param $max_depth
+ *   The number of levels of the tree to return. Leave NULL to return all levels.
+ * @param $load_entities
+ *   If TRUE, a full entity load will occur on the account objects. Otherwise they
+ *   are partial objects queried directly from the {ledger_account} table to
+ *   save execution time and memory consumption when listing large numbers of
+ *   accounts. Defaults to FALSE.
+ *
+ * @return array
+ *   An array of all account objects in the tree. Each account object is extended
+ *   to have "depth" and "parents" attributes in addition to its normal ones.
+ *   Results are statically cached. Account objects will be partial or complete
+ *   depending on the $load_entities parameter.
+ */
+function ledger_account_get_tree($book, $parent = 0, $max_depth = NULL, $load_entities = FALSE) {
+
+  // Start a tree array.
+  $tree = array();
+
+  // If no book id is provided, bail.
+  if (empty($book) || !is_numeric($book)) {
+    return $tree;
+  }
+
+  // Create static containers for this book's account information.
+  $children = &drupal_static(__FUNCTION__ . $book, array());
+  $parents = &drupal_static(__FUNCTION__ . $book . ':parents', array());
+  $accounts = &drupal_static(__FUNCTION__ . $book . ':accounts', array());
+
+  // We cache trees, so it's not CPU-intensive to call get_tree() on an account
+  // and its children, too.
+  if (empty($children)) {
+    $children = array();
+    $parents = array();
+    $accounts = array();
+
+    // Load all the accounts from the database.
+    $query = db_select('ledger_account', 'a');
+    $query->fields('a');
+    $query->condition('a.bid', $book);  // Filter by book.
+    $query->orderBy('a.pid');  // Order by parent account id first.
+    $query->orderBy('a.name');  // Order by account name second.
+    $result = $query->execute();
+
+    foreach ($result as $account) {
+      $children[$account->pid][] = $account->aid;
+      $parents[$account->aid][] = $account->pid;
+      $accounts[$account->aid] = $account;
+    }
+  }
+
+  // Load full entities, if necessary. The entity controller statically
+  // caches the results.
+  if ($load_entities) {
+    $account_entities = ledger_account_load_multiple(array_keys($accounts));
+  }
+
+  $max_depth = (!isset($max_depth)) ? count($children) : $max_depth;
+
+  // Keeps track of the parents we have to process, the last entry is used
+  // for the next processing step.
+  $process_parents = array();
+  $process_parents[] = $parent;
+
+  // Loops over the parent accounts and adds its children to the tree array.
+  // Uses a loop instead of a recursion, because it's more efficient.
+  while (count($process_parents)) {
+    $parent = array_pop($process_parents);
+    // The number of parents determines the current depth.
+    $depth = count($process_parents);
+    if ($max_depth > $depth && !empty($children[$parent])) {
+      $has_children = FALSE;
+      $child = current($children[$parent]);
+      do {
+        if (empty($child)) {
+          break;
+        }
+        $account = $load_entities ? $account_entities[$child] : $accounts[$child];
+        if (isset($parents[$account->aid])) {
+          // Clone the account so that the depth attribute remains correct
+          // in the event of multiple parents.
+          $account = clone $account;
+        }
+        $account->depth = $depth;
+        unset($account->pid);
+        $account->parents = $parents[$account->aid];
+        $tree[] = $account;
+        if (!empty($children[$account->aid])) {
+          $has_children = TRUE;
+
+          // We have to continue with this parent later.
+          $process_parents[] = $parent;
+          // Use the current account as parent for the next iteration.
+          $process_parents[] = $account->aid;
+
+          // Reset pointers for child lists because we step in there more often
+          // with multi parents.
+          reset($children[$account->aid]);
+          // Move pointer so that we get the correct account the next time.
+          next($children[$parent]);
+          break;
+        }
+      } while ($child = next($children[$parent]));
+
+      if (!$has_children) {
+        // We processed all accounts in this hierarchy-level, reset pointer
+        // so that this function works the next time it gets called.
+        reset($children[$parent]);
+      }
+    }
+  }
+
+  return $tree;
+}
+
+/**
+ * Returns a list of accounts to use in a form select element.
+ *
+ * @param $book
+ *   The book id to load accounts from. Required.
+ */
+function ledger_account_select_options($book) {
+
+  // If the book is not a number, bail.
+  if (!is_numeric($book)) {
+    return array();
+  }
+
+  // Start a static array of options.
+  $options = &drupal_static(__FUNCTION__ . $book, array());
+
+  // If options for the given book are not available, load them.
+  if (empty($options)) {
+
+    // Give it a 0 value to start
+    $options[0] = '- Select -';
+
+    // Load the hierarchic list of accounts.
+    $account_tree = ledger_account_get_tree($book);
+
+    // Loop through the accounts.
+    foreach ($account_tree as $account) {
+
+      // Add the account to the options, with dashes indicating depth.
+      $options[$account->aid] = str_repeat('-', $account->depth) . $account->name;
+    }
+  }
+  return $options;
+}
+

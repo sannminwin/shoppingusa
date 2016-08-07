@@ -1,0 +1,300 @@
+<?php
+
+/**
+ * @file
+ * Ledger Book UI
+ */
+
+/***************************************************************
+ * Drupal core hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_menu().
+ */
+function ledger_book_ui_menu() {
+  $items = array();
+
+  // Note: the following pages are defined by default Views:
+  //   /ledger/books
+
+  // Create book
+  $items['ledger/book/add'] = array(
+    'title' => 'Create a ledger book',
+    'description' => 'Create a new ledger book.',
+    'page callback' => 'ledger_book_ui_book_form_wrapper',
+    'page arguments' => array(NULL, 2),
+    'access callback' => 'ledger_book_access',
+    'access arguments' => array('create'),
+    'weight' => 10,
+  );
+
+  // Edit book
+  $items['ledger/book/%ledger_book/edit'] = array(
+    'title' => 'Edit book',
+    'page callback' => 'ledger_book_ui_book_form_wrapper',
+    'page arguments' => array(2, 3),
+    'access callback' => 'ledger_book_access',
+    'access arguments' => array('update', 2),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 100,
+    'context' => MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE,
+  );
+
+  // Delete book
+  $items['ledger/book/%ledger_book/delete'] = array(
+    'title' => 'Delete',
+    'page callback' => 'ledger_book_ui_book_form_wrapper',
+    'page arguments' => array(2, 3),
+    'access callback' => 'ledger_book_access',
+    'access arguments' => array('delete', 2),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 20,
+    'context' => MENU_CONTEXT_INLINE,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_menu_local_tasks_alter().
+ */
+function ledger_book_ui_menu_local_tasks_alter(&$data, $router_item, $root_path) {
+
+  // Add action links.
+  if ($root_path == 'admin/ledger' || $root_path == 'admin/ledger/books' || $root_path == 'ledger' || $root_path == 'ledger/books') {
+    $item = menu_get_item('ledger/book/add');  // Load the menu item for the book add form
+    $item['localized_options']['query']['destination'] = current_path();  // Set the destination argument to the current path
+    if ($item['access']) {
+      $data['actions']['output'][] = array(
+        '#theme' => 'menu_local_action',
+        '#link' => $item,
+      );
+    }
+  }
+}
+
+/***************************************************************
+ * Views hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_views_api().
+ */
+function ledger_book_ui_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'ledger_book_ui') . '/views',
+  );
+}
+
+/***************************************************************
+ * Page callbacks
+ * *************************************************************/
+
+/**
+ * Wrapper function for the ledger_ui_book_form that serves as a page callback.
+ */
+function ledger_book_ui_book_form_wrapper($book, $op, $type=NULL) {
+
+  // If a book isn't provided, create a new one.
+  if (!$book) {
+    $book = ledger_book_new();
+  }
+
+  // Set the page title
+  drupal_set_title(t('Edit book: @book', array('@book' => ledger_book_title($book))));
+
+  // Create the breadcrumb for the page
+  $breadcrumb = array(
+    l(t('Home'), '<front>'),
+    l(t('Ledger'), 'ledger'),
+    l(t('Books'), 'ledger/books'),
+  );
+  drupal_set_breadcrumb($breadcrumb);
+
+  // Display the ledger book form.
+  if ($op == 'delete') {
+    return drupal_get_form('ledger_book_delete_form', $book);
+  }
+  else {
+    return drupal_get_form('ledger_book_form', $book, $op);
+  }
+}
+
+/***************************************************************
+ * Book entity forms
+ * *************************************************************/
+
+/**
+ * Form callback: ledger book edit form.
+ */
+function ledger_book_form($form, &$form_state, $book, $op = 'edit') {
+
+  // Save the book object to the form values.
+  $form['ledger_book'] = array(
+    '#type' => 'value',
+    '#value' => $book,
+  );
+
+  // Book id
+  $form['bid'] = array(
+    '#type' => 'hidden',
+    '#default_value' => $book->bid,
+  );
+
+  // Book name
+  $form['name'] = array(
+    '#title' => t('Book name'),
+    '#type' => 'textfield',
+    '#default_value' => $book->name,
+    '#description' => t('The name of the book.'),
+    '#required' => TRUE,
+  );
+
+  // Figure out the book's owner.
+  if (!empty($book->uid)) {
+    $user = user_load($book->uid);
+  }
+  else {
+    global $user;
+  }
+  $owner = $user->name;
+
+  // Book owner
+  $form['owner'] = array(
+    '#title' => t('Book owner'),
+    '#type' => 'textfield',
+    '#default_value' => $owner,
+    '#description' => t('The username id of the book\'s owner.'),
+    '#autocomplete_path' => 'user/autocomplete',
+    '#required' => TRUE,
+    '#access' => user_access('assign ledger_book ownership'),
+  );
+
+  // Add the Field API elements.
+  field_attach_form('ledger_book', $book, $form, $form_state);
+
+  // Form actions
+  $form['actions'] = array('#type' => 'actions');
+
+  // Submit button
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save book'),
+    '#weight' => 40,
+  );
+
+  return $form;
+}
+
+/**
+ * Validate callback for ledger_book_form().
+ */
+function ledger_book_form_validate(&$form, &$form_state) {
+
+  // Load book object from the form values.
+  $book = $form_state['values']['ledger_book'];
+
+  // Notify field widgets to validate their data.
+  field_attach_form_validate('ledger_book', $book, $form, $form_state);
+
+  // Validate that the owner is a user.
+  $user = user_load_by_name($form_state['values']['owner']);
+  if (empty($user->uid)) {
+    form_set_error('owner', 'Book owner is not a valid user account.');
+  }
+}
+
+/**
+ * Submit callback for ledger_book_form().
+ */
+function ledger_book_form_submit(&$form, &$form_state) {
+
+  // Load the owner's user account.
+  $owner = user_load_by_name($form_state['values']['owner']);
+
+  // If the user is editing a book, merge changes to it.
+  if ($form_state['values']['ledger_book']->bid) {
+
+    // Load the book object from the form values.
+    $book = $form_state['values']['ledger_book'];
+
+    // Overwrite with the new values.
+    $book->name = $form_state['values']['name'];
+    $book->uid = $owner->uid;
+  }
+
+  // If a new book is being created, build a new book object.
+  else {
+    $form_state['values']['uid'] = $owner->uid;
+    $book = ledger_book_new($form_state['values']);
+  }
+
+  // Save any associated entity field data
+  field_attach_submit('ledger_book', $book, $form, $form_state);
+
+  // Save the book.
+  ledger_book_save($book);
+
+  // Display a message.
+  drupal_set_message(t('Book saved.'));
+
+  // Provide a default redirect.
+  $form_state['redirect'] = 'ledger/books';
+}
+
+/**
+ * Form callback: confirmation form for deleting a book.
+ *
+ * @param $book
+ *   The book object to delete through the form.
+ *
+ * @return
+ *   The form array to confirm deletion..
+ *
+ * @see confirm_form()
+ */
+function ledger_book_delete_form($form, &$form_state, $book) {
+
+  // Save the book object to the form values.
+  $form['ledger_book'] = array(
+    '#type' => 'value',
+    '#value' => $book,
+  );
+
+  // Confirm form
+  $form = confirm_form($form,
+    t('Are you sure you want to delete the book "@name"?', array('@name' => $book->name)),
+    '',
+    '<p>' . t('Deleting this book cannot be undone.') . '</p>',
+    t('Delete'),
+    t('Cancel'),
+    'confirm'
+  );
+  return $form;
+}
+
+/**
+ * Submit callback for ledger_book_delete_form().
+ */
+function ledger_book_delete_form_submit($form, &$form_state) {
+
+  // Get the book object from the form values.
+  $book = $form_state['values']['ledger_book'];
+
+  // Delete the book and log the results.
+  /**
+   * @todo:
+   *   Make this check to see if the deletion succeeded, like Drupal Commerce does.
+   *   Commerce currently uses it's own custom fork of EntityAPIController which extends the delete() function to return TRUE/FALSE.
+   *   See commerce_order_order_delete_form_submit().
+   */
+  ledger_book_delete($book->bid);
+  drupal_set_message(t('Book "@name" has been deleted.', array('@name' => $book->name)));
+  watchdog('ledger_book', 'Deleted book "@name."', array('@name' => $book->name), WATCHDOG_NOTICE);
+
+  // Redirect
+  $form_state['redirect'] = 'ledger/books';
+}
+

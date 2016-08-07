@@ -1,0 +1,12 @@
+<?php
+function commerce_shipping_cd_uninstall() {
+  foreach (commerce_customer_profile_types() as $type => $profile_type) {
+    $options[$profile_type['type']] = $profile_type['name'];
+  }
+
+  foreach (commerce_shipping_services() as $name => $shipping_service) {
+    if (variable_get($name . '_details_form','') != NULL) {
+        variable_del($name . '_details_form','');
+    }
+  }
+}

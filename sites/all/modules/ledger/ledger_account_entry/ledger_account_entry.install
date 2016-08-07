@@ -1,0 +1,78 @@
+<?php
+
+/**
+ * @file
+ * Ledger Account Entry install
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function ledger_account_entry_schema() {
+  $schema['ledger_account_entry'] = array(
+    'description' => 'Ledger account entries',
+    'fields' => array(
+      'eid' => array(
+        'description' => 'Account entry ID',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'aid' => array(
+        'description' => 'Account ID',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'tid' => array(
+        'description' => 'Transaction ID',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'description' => array(
+        'description' => 'Account entry description',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => FALSE,
+      ),
+    ),
+    'primary key' => array('eid'),
+    'foreign keys' => array(
+      'account' => array(
+        'table' => 'ledger_account',
+        'columns' => array('aid' => 'aid'),
+      ),
+      'transaction' => array(
+        'table' => 'ledger_transaction',
+        'columns' => array('tid' => 'tid'),
+      ),
+    ),
+    'indexes' => array(
+      'aid' => array('aid'),
+      'tid' => array('tid'),
+    ),
+  );
+  return $schema;
+}
+
+/**
+ * Implements hook_enable().
+ */
+function ledger_account_entry_enable() {
+
+  // Add Value fields to account entry bundles.
+  ledger_account_entry_configure_account_entry_types();
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ledger_account_entry_uninstall() {
+
+  // Remove fields from account entry bundles.
+  field_attach_delete_bundle('ledger_account_entry', 'ledger_account_entry');
+}
+

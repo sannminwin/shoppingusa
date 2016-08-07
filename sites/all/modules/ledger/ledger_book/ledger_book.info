@@ -1,0 +1,21 @@
+name = "Book"
+description = "Defines the Ledger Book entity and associated features."
+core = 7.x
+package = "Ledger"
+dependencies[] = entity
+dependencies[] = ledger
+
+files[] = views/handlers/ledger_book_handler_field_link_delete.inc
+files[] = views/handlers/ledger_book_handler_field_link_edit.inc
+files[] = views/handlers/ledger_book_handler_field_link.inc
+files[] = views/handlers/ledger_book_handler_field_operations.inc
+files[] = views/handlers/ledger_book_handler_field.inc
+files[] = views/handlers/ledger_book_plugin_argument_validate_book.inc
+
+
+; Information added by Drupal.org packaging script on 2014-11-12
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "ledger"
+datestamp = "1415802186"
+

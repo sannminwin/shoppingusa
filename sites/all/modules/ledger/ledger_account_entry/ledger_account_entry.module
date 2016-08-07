@@ -1,0 +1,348 @@
+<?php
+
+/**
+ * @file
+ * Ledger Account Entry
+ */
+
+/***************************************************************
+ * Drupal core hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_permission().
+ */
+function ledger_account_entry_permission() {
+
+  // Add granular entity permissions via ledger's helper function.
+  return ledger_entity_access_permissions('ledger_account_entry');
+}
+
+/**
+ * Implements hook_entity_info().
+ */
+function ledger_account_entry_entity_info() {
+  $entities['ledger_account_entry'] = array(
+    'label' => t('Ledger Account Entry'),
+    'label plural' => t('Ledger Account Entries'),
+    'entity class' => 'LedgerAccountEntry',
+    'controller class' => 'LedgerAccountEntryController',
+    'base table' => 'ledger_account_entry',
+    'fieldable' => TRUE,
+    'entity keys' => array(
+      'id' => 'eid',
+    ),
+    'label callback' => 'entity_class_label',
+    'uri callback' => 'entity_class_uri',
+    'module' => 'ledger_account_entry',
+    'access callback' => 'ledger_account_entry_access',
+    'bundles' => array(
+      'ledger_account_entry' => array(
+        'label' => t('Account entry', array(), array('context' => 'a ledger account entry')),
+      ),
+    ),
+  );
+  return $entities;
+}
+
+/***************************************************************
+ * Ledger hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_ledger_ownership().
+ */
+function ledger_account_entry_ledger_ownership($account_entry, $user) {
+
+  // If the account id is empty, bail.
+  if (empty($account_entry->aid)) {
+    return;
+  }
+
+  // Load the account entry's account.
+  $account = ledger_account_load($account_entry->aid);
+
+  // Defer to the account module's ownership function.
+  return ledger_account_ledger_ownership($account, $user);
+}
+
+/***************************************************************
+ * Views API hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_views_api().
+ */
+function ledger_account_entry_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'ledger_account_entry') . '/views',
+  );
+}
+
+/***************************************************************
+ * Ledger Account Entry class and functions
+ * *************************************************************/
+
+/**
+ * The class for LedgerAccountEntry entities.
+ */
+class LedgerAccountEntry extends Entity {
+
+  public function __construct($values = array()) {
+    parent::__construct($values, 'ledger_account_entry');
+  }
+
+  protected function defaultLabel() {
+    return t('@description', array('@description' => $this->description));
+  }
+
+  protected function defaultUri() {
+    return array('path' => 'ledger/account_entry/' . $this->eid);
+  }
+}
+
+/**
+ * The controller for LedgerAccountEntry entities
+ */
+class LedgerAccountEntryController extends EntityAPIController {
+
+  /**
+   * Create an account entry - we first set up the values that are specific
+   * to our ledger_account_entry schema but then also go through the EntityAPIController
+   * function.
+   *
+   * @param $values
+   *   Values passed in.
+   *
+   * @return
+   *   A model object with all default fields initialized.
+   */
+  public function create(array $values = array()) {
+
+    // Add values that are specific to account entries.
+    $values += array(
+      'eid' => '',
+      'tid' => 0,
+      'aid' => 0,
+      'description' => '',
+      'value' => 0,
+    );
+
+    $account_entry = parent::create($values);
+    return $account_entry;
+  }
+
+  /**
+   * Save an account entry.
+   *
+   * @param $transaction
+   *   Optionally a DatabaseTransaction object to use. Allows overrides to pass
+   *   in their transaction object.
+   */
+  public function save($entity, DatabaseTransaction $transaction = NULL) {
+
+    // Convert the account entry's value to a numerator and denominator and
+    // save it to the account entry's Fraction field.
+    if (!empty($entity->value)) {
+      $fraction = fraction_from_decimal($entity->value);
+      $entity->ledger_value[LANGUAGE_NONE][0]['numerator'] = $fraction->getNumerator();
+      $entity->ledger_value[LANGUAGE_NONE][0]['denominator'] = $fraction->getDenominator();
+    }
+
+    // Pass it to the parent controller's save function.
+    parent::save($entity, $transaction);
+  }
+
+  /**
+   * Load account entries.
+   */
+  public function load($ids = array(), $conditions = array()) {
+
+    // Load the entity using the parent controller's load function.
+    $entities = parent::load($ids, $conditions);
+
+    // Load information about the account entry value field instance.
+    $instance = field_info_instance('ledger_account_entry', 'ledger_value', 'ledger_account_entry');
+
+    // Determine the default value field display's decimal precision.
+    $precision = FRACTION_PRECISION_DEFAULT;
+    if (!empty($instance['display']['default']['settings']['precision'])) {
+      $precision = $instance['display']['default']['settings']['precision'];
+    }
+
+    // Iterate through the returned entities.
+    foreach ($entities as $entity) {
+
+      // Start with a value of 0.
+      $value = 0;
+
+      // Iterate through the fraction field values.
+      if (!empty($entity->ledger_value[LANGUAGE_NONE])) {
+        foreach ($entity->ledger_value[LANGUAGE_NONE] as $value) {
+
+          // Create a decimal equivalent value.
+          $value = $value['fraction']->toDecimal($precision, TRUE);
+        }
+      }
+
+      // Assign the value.
+      $entity->value = $value;
+    }
+
+    return $entities;
+  }
+}
+
+/**
+ * Access callback for ledger entities.
+ *
+ * @param $op
+ *   The operation being performed. One of 'view', 'update', 'create', 'delete'.
+ * @param $entity
+ *   Optionally a specific ledger entity to check.
+ * @param $account
+ *   The user to check for. Leave it to NULL to check for the global user.
+ *
+ * @return boolean
+ *   Whether access is allowed or not.
+ */
+function ledger_account_entry_access($op, $entity = NULL, $account = NULL) {
+  return ledger_entity_access($op, $entity, $account, 'ledger_account_entry');
+}
+
+/**
+ * Returns a title for the account entry.
+ *
+ * @param $account_entry
+ *   A ledger account entry object.
+ *
+ * @return
+ *   A string that represents the account entry title.
+ */
+function ledger_account_entry_title($account_entry) {
+  return $account_entry->description;
+}
+
+/**
+ * Returns an initialized account entry object.
+ *
+ * @return
+ *   An account entry object with all default fields initialized.
+ */
+function ledger_account_entry_new($values = array()) {
+  return entity_get_controller('ledger_account_entry')->create($values);
+}
+
+/**
+ * Loads an account entry by ID.
+ */
+function ledger_account_entry_load($eid, $reset = FALSE) {
+  $account_entries = ledger_account_entry_load_multiple(array($eid), array(), $reset);
+  return $account_entries ? reset($account_entries) : FALSE;
+}
+
+/**
+ * Loads multiple account entries by ID or based on a set of matching conditions.
+ *
+ * @see entity_load()
+ *
+ * @param $account_entry_ids
+ *   An array of account entry IDs.
+ * @param $conditions
+ *   An array of conditions on the {ledger_account_entry} table in the form
+ *     'field' => $value.
+ * @param $reset
+ *   Whether to reset the internal account entry loading cache.
+ *
+ * @return
+ *   An array of account entry objects indexed by tid.
+ */
+function ledger_account_entry_load_multiple($account_entry_ids = array(), $conditions = array(), $reset = FALSE) {
+  return entity_load('ledger_account_entry', $account_entry_ids, $conditions, $reset);
+}
+
+/**
+ * Saves an account entry to the database.
+ *
+ * @param $account_entry
+ *   The account entry object.
+ */
+function ledger_account_entry_save($account_entry) {
+  return entity_get_controller('ledger_account_entry')->save($account_entry);
+}
+
+/**
+ * Deletes an account entry by ID.
+ *
+ * @param $eid
+ *   The ID of the account_entry to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function ledger_account_entry_delete($eid) {
+  return ledger_account_entry_delete_multiple(array($eid));
+}
+
+/**
+ * Deletes multiple account_entries by ID.
+ *
+ * @param $account_entry_ids
+ *   An array of account entry IDs to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function ledger_account_entry_delete_multiple($account_entry_ids) {
+  return entity_get_controller('ledger_account_entry')->delete($account_entry_ids);
+}
+
+/***************************************************************
+ * Configuration functions.
+ * *************************************************************/
+
+/**
+ * Add necessary fields to the account entry bundle.
+ */
+function ledger_account_entry_configure_account_entry_types($type = 'ledger_account_entry') {
+
+  // Create the ledger_value field, if necessary.
+  $field_name = ledger_configure_value_field();
+
+  // Look up existing instance information.
+  $instance = field_info_instance('ledger_account_entry', $field_name, $type);
+
+  // If the instance doesn't exist, create it.
+  if (empty($instance)) {
+    $instance = array(
+      'field_name' => $field_name,
+      'entity_type' => 'ledger_account_entry',
+      'bundle' => $type,
+      'label' => t('Value'),
+      'settings' => array(),
+      'widget' => array(
+        'type' => 'fraction_decimal',
+        'settings' => array(
+          'precision' => 2,
+        ),
+        'weight' => -10,
+      ),
+      'display' => array(
+        'default' => array(
+          'label' => 'hidden',
+          'type' => 'fraction_decimal',
+          'settings' => array(
+            'precision' => 2,
+            'auto_precision' => TRUE,
+          ),
+          'weight' => -10,
+        ),
+      ),
+    );
+
+    // Create the field instance.
+    field_create_instance($instance);
+  }
+}
+

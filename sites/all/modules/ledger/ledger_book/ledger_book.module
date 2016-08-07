@@ -1,0 +1,284 @@
+<?php
+
+/**
+ * @file
+ * Ledger Book
+ */
+
+/***************************************************************
+ * Drupal core hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_permission().
+ */
+function ledger_book_permission() {
+
+  // Add granular entity permissions via ledger's helper function.
+  $permissions = ledger_entity_access_permissions('ledger_book');
+
+  // Add permission for assigning book ownership.
+  $permissions['assign ledger_book ownership'] = array(
+    'title' => t('Assign ledger book ownership'),
+  );
+
+  return $permissions;
+}
+
+/**
+ * Implements hook_entity_info().
+ */
+function ledger_book_entity_info() {
+  $entities['ledger_book'] = array(
+    'label' => t('Ledger Book'),
+    'label plural' => t('Ledger Books'),
+    'description' => t('A Ledger book.'),
+    'entity class' => 'LedgerBook',
+    'controller class' => 'LedgerBookController',
+    'base table' => 'ledger_book',
+    'fieldable' => TRUE,
+    'entity keys' => array(
+      'id' => 'bid',
+    ),
+    'label callback' => 'entity_class_label',
+    'uri callback' => 'entity_class_uri',
+    'module' => 'ledger_book',
+    'access callback' => 'ledger_book_access',
+    'bundles' => array(
+      'ledger_book' => array(
+        'label' => t('Book', array(), array('context' => 'a ledger book')),
+      ),
+    ),
+  );
+  return $entities;
+}
+
+/***************************************************************
+ * Ledger hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_ledger_ownership().
+ */
+function ledger_book_ledger_ownership($book, $user) {
+
+  // Check to see if the user owns the book.
+  if ($user->uid == $book->uid) {
+    return TRUE;
+  }
+}
+
+/***************************************************************
+ * Views API hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_views_api().
+ */
+function ledger_book_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'ledger_book') . '/views',
+  );
+}
+
+/***************************************************************
+ * Ledger Book class and functions
+ * *************************************************************/
+
+/**
+ * The class for LedgerBook entities.
+ */
+class LedgerBook extends Entity {
+
+  public function __construct($values = array()) {
+    parent::__construct($values, 'ledger_book');
+  }
+
+  protected function defaultLabel() {
+    return t('@name', array('@name' => $this->name));
+  }
+
+  protected function defaultUri() {
+    return array('path' => 'ledger/book/' . $this->bid);
+  }
+}
+
+/**
+ * The controller for LedgerBook entities
+ */
+class LedgerBookController extends EntityAPIController {
+
+  /**
+   * Create a book - we first set up the values that are specific
+   * to our ledger_book schema but then also go through the EntityAPIController
+   * function.
+   *
+   * @param $values
+   *   Values passed in.
+   *
+   * @return
+   *   A book object with all default fields initialized.
+   */
+  public function create(array $values = array()) {
+
+    // Add values that are specific to our book.
+    $values += array(
+      'bid' => '',
+      'name' => '',
+      'uid' => '',
+    );
+
+    $book = parent::create($values);
+    return $book;
+  }
+}
+
+/**
+ * Access callback for ledger entities.
+ *
+ * @param $op
+ *   The operation being performed. One of 'view', 'update', 'create', 'delete'.
+ * @param $entity
+ *   Optionally a specific ledger entity to check.
+ * @param $account
+ *   The user to check for. Leave it to NULL to check for the global user.
+ *
+ * @return boolean
+ *   Whether access is allowed or not.
+ */
+function ledger_book_access($op, $entity = NULL, $account = NULL) {
+  return ledger_entity_access($op, $entity, $account, 'ledger_book');
+}
+
+/**
+ * Returns the title of a book.
+ *
+ * @param $book
+ *   A ledger book object.
+ *
+ * @return
+ *   A string that represents the book title.
+ */
+function ledger_book_title($book) {
+
+  // Return the book name.
+  return $book->name;
+}
+
+/**
+ * Returns an initialized book object.
+ *
+ * @return
+ *   A book object with all default fields initialized.
+ */
+function ledger_book_new($values = array()) {
+  return entity_get_controller('ledger_book')->create($values);
+}
+
+/**
+ * Loads a book by ID.
+ */
+function ledger_book_load($bid, $reset = FALSE) {
+  $books = ledger_book_load_multiple(array($bid), array(), $reset);
+  return $books ? reset($books) : FALSE;
+}
+
+/**
+ * Loads multiple books by ID or based on a set of matching conditions.
+ *
+ * @see entity_load()
+ *
+ * @param $book_ids
+ *   An array of book IDs.
+ * @param $conditions
+ *   An array of conditions on the {ledger_book} table in the form
+ *     'field' => $value.
+ * @param $reset
+ *   Whether to reset the internal book loading cache.
+ *
+ * @return
+ *   An array of book objects indexed by bid.
+ */
+function ledger_book_load_multiple($book_ids = array(), $conditions = array(), $reset = FALSE) {
+  return entity_load('ledger_book', $book_ids, $conditions, $reset);
+}
+
+/**
+ * Saves a book to the database.
+ *
+ * @param $book
+ *   The book object.
+ */
+function ledger_book_save($book) {
+  return entity_get_controller('ledger_book')->save($book);
+}
+
+/**
+ * Deletes a book by ID.
+ *
+ * @param $bid
+ *   The ID of the book to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function ledger_book_delete($bid) {
+  return ledger_book_delete_multiple(array($bid));
+}
+
+/**
+ * Deletes multiple books by ID.
+ *
+ * @param $bids
+ *   An array of book IDs to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function ledger_book_delete_multiple($bids) {
+  return entity_get_controller('ledger_book')->delete($bids);
+}
+
+/***************************************************************
+ * Utility functions
+ * *************************************************************/
+
+/**
+ * Return a list of books owned by a user.
+ *
+ * @param $account
+ *   (Optional) The user account to check. If ommitted, current user is used.
+ *
+ * @return array
+ *   Returns an array of books owned by the user.
+ */
+function ledger_book_user_books($account = NULL) {
+
+  $books = array();
+
+  // If the user account is not set, use the currently logged in user.
+  global $user;
+  if (!isset($account)) {
+    $account = $user;
+  }
+
+  // Start assembling the query.
+  $query = db_select('ledger_book', 'b');
+  $query->fields('b', array('bid', 'name'));
+
+  // If the user does not have 'administer ledger' permission, limit the results
+  // to books that they own.
+  if (!user_access('administer ledger', $account)) {
+    $query->condition('uid', $account->uid);
+  }
+
+  // Execute the query and process the results.
+  $result = $query->execute();
+  foreach ($result as $row) {
+    $books[$row->bid] = $row->name;
+  }
+
+  return $books;
+}
+

@@ -1,0 +1,296 @@
+<?php
+
+/**
+ * @file
+ * Ledger Transaction
+ */
+
+/***************************************************************
+ * Drupal core hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_permission().
+ */
+function ledger_transaction_permission() {
+
+  // Add granular entity permissions via ledger's helper function.
+  return ledger_entity_access_permissions('ledger_transaction');
+}
+
+/**
+ * Implements hook_entity_info().
+ */
+function ledger_transaction_entity_info() {
+  $entities['ledger_transaction'] = array(
+    'label' => t('Ledger Transaction'),
+    'label plural' => t('Ledger Transactions'),
+    'entity class' => 'LedgerTransaction',
+    'controller class' => 'LedgerTransactionController',
+    'base table' => 'ledger_transaction',
+    'fieldable' => TRUE,
+    'entity keys' => array(
+      'id' => 'tid',
+    ),
+    'label callback' => 'entity_class_label',
+    'uri callback' => 'entity_class_uri',
+    'module' => 'ledger_transaction',
+    'access callback' => 'ledger_transaction_access',
+    'bundles' => array(
+      'ledger_transaction' => array(
+        'label' => t('Transaction', array(), array('context' => 'a ledger transaction')),
+      ),
+    ),
+  );
+  return $entities;
+}
+
+/***************************************************************
+ * Ledger hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_ledger_ownership().
+ */
+function ledger_transaction_ledger_ownership($transaction, $user) {
+
+  // If the transaction book id is empty, bail.
+  if (empty($transaction->bid)) {
+    return;
+  }
+
+  // Load the transaction's book.
+  $book = ledger_book_load($transaction->bid);
+
+  // Defer to the book module's ownership function.
+  return ledger_book_ledger_ownership($book, $user);
+}
+
+/***************************************************************
+ * Views API hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_views_api().
+ */
+function ledger_transaction_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'ledger_transaction') . '/views',
+  );
+}
+
+/***************************************************************
+ * Ledger Transaction class and functions
+ * *************************************************************/
+
+/**
+ * The class for LedgerTransaction entities.
+ */
+class LedgerTransaction extends Entity {
+
+  public function __construct($values = array()) {
+    parent::__construct($values, 'ledger_transaction');
+  }
+
+  protected function defaultLabel() {
+    return t('@description', array('@description' => $this->description));
+  }
+
+  protected function defaultUri() {
+    return array('path' => 'ledger/transaction/' . $this->tid);
+  }
+}
+
+/**
+ * The controller for LedgerTransaction entities
+ */
+class LedgerTransactionController extends EntityAPIController {
+
+  /**
+   * Create a transaction - we first set up the values that are specific
+   * to our ledger_transaction schema but then also go through the EntityAPIController
+   * function.
+   *
+   * @param $values
+   *   Values passed in.
+   *
+   * @return
+   *   A model object with all default fields initialized.
+   */
+  public function create(array $values = array()) {
+
+    // Add values that are specific to our transaction
+    $values += array(
+      'tid' => '',
+      'bid' => 0,
+      'description' => '',
+      'timestamp' => time(),  // Default to current time
+    );
+
+    $transaction = parent::create($values);
+    return $transaction;
+  }
+
+  /**
+   * Delete transactions
+   *
+   * @param $ids
+   *   Array of transaction ids.
+   * @param $transaction
+   *   Optionally a DatabaseTransaction object to use. Allows overrides to pass
+   *   in their transaction object.
+   */
+  public function delete($ids, DatabaseTransaction $transaction = NULL) {
+
+    // Delete all account entries associated with the transanctions.
+    if (!empty($ids)) {
+      $eids = array();
+      $query = db_select('ledger_account_entry', 'e');
+      $query->addField('e', 'eid');
+      $query->where('tid IN (' . implode(',', $ids) . ')');
+      $result = $query->execute();
+      foreach ($result as $row) {
+        $eids[] = $row->eid;
+      }
+      ledger_account_entry_delete_multiple($eids);
+    }
+
+    // Call the parent class's delete() function to delete the transaction entities from the database.
+    parent::delete($ids, $transaction);
+  }
+}
+
+/**
+ * Access callback for ledger entities.
+ *
+ * @param $op
+ *   The operation being performed. One of 'view', 'update', 'create', 'delete'.
+ * @param $entity
+ *   Optionally a specific ledger entity to check.
+ * @param $account
+ *   The user to check for. Leave it to NULL to check for the global user.
+ *
+ * @return boolean
+ *   Whether access is allowed or not.
+ */
+function ledger_transaction_access($op, $entity = NULL, $account = NULL) {
+  return ledger_entity_access($op, $entity, $account, 'ledger_transaction');
+}
+
+/**
+ * Returns a title for the transaction.
+ *
+ * @param $transaction
+ *   A ledger transaction object.
+ *
+ * @return
+ *   A string that represents the transaction title.
+ */
+function ledger_transaction_title($transaction) {
+  return $transaction->description;
+}
+
+/**
+ * Returns an initialized transaction object.
+ *
+ * @return
+ *   A transaction object with all default fields initialized.
+ */
+function ledger_transaction_new($values = array()) {
+  return entity_get_controller('ledger_transaction')->create($values);
+}
+
+/**
+ * Loads a transaction by ID.
+ */
+function ledger_transaction_load($tid, $reset = FALSE) {
+  $transactions = ledger_transaction_load_multiple(array($tid), array(), $reset);
+  return $transactions ? reset($transactions) : FALSE;
+}
+
+/**
+ * Loads multiple transactions by ID or based on a set of matching conditions.
+ *
+ * @see entity_load()
+ *
+ * @param $transaction_ids
+ *   An array of transaction IDs.
+ * @param $conditions
+ *   An array of conditions on the {ledger_transaction} table in the form
+ *     'field' => $value.
+ * @param $reset
+ *   Whether to reset the internal transaction loading cache.
+ *
+ * @return
+ *   An array of transaction objects indexed by tid.
+ */
+function ledger_transaction_load_multiple($transaction_ids = array(), $conditions = array(), $reset = FALSE) {
+  return entity_load('ledger_transaction', $transaction_ids, $conditions, $reset);
+}
+
+/**
+ * Saves a transaction to the database.
+ *
+ * @param $transaction
+ *   The transaction object.
+ */
+function ledger_transaction_save($transaction) {
+  return entity_get_controller('ledger_transaction')->save($transaction);
+}
+
+/**
+ * Deletes a transaction by ID.
+ *
+ * @param $tid
+ *   The ID of the transaction to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function ledger_transaction_delete($tid) {
+  return ledger_transaction_delete_multiple(array($tid));
+}
+
+/**
+ * Deletes multiple transactions by ID.
+ *
+ * @param $transaction_ids
+ *   An array of transaction IDs to delete.
+ *
+ * @return
+ *   TRUE on success, FALSE otherwise.
+ */
+function ledger_transaction_delete_multiple($transaction_ids) {
+  return entity_get_controller('ledger_transaction')->delete($transaction_ids);
+}
+
+/***************************************************************
+ * Utility functions.
+ * *************************************************************/
+
+/**
+ * Return the book id that a transaction belongs to.
+ *
+ * @param $tid
+ *   Transaction id.
+ *
+ * @return
+ *   Returns a book id if available, NULL otherwise.
+ */
+function ledger_transaction_book($tid) {
+
+  // If the transaction doesn't have an id, bail.
+  if (empty($tid) || !is_numeric($tid)) {
+    return;
+  }
+
+  // Look up the book id by finding account entries associated with this
+  // transaction, then looking at the book id of their accounts.
+  $query = db_select('ledger_account_entry', 'lae');
+  $query->addField('la', 'bid');
+  $query->join('ledger_account', 'la', 'la.aid = lae.aid');
+  $query->condition('lae.tid', $tid);
+  $query->range(0, 1);
+  return $query->execute()->fetchField();
+}

@@ -1,0 +1,23 @@
+name = "Account"
+description = "Defines the Account entity and associated features."
+core = 7.x
+package = "Ledger"
+dependencies[] = entity
+dependencies[] = ledger
+dependencies[] = ledger_book
+
+files[] = views/handlers/ledger_account_handler_field_account_type.inc
+files[] = views/handlers/ledger_account_handler_field_link_delete.inc
+files[] = views/handlers/ledger_account_handler_field_link_edit.inc
+files[] = views/handlers/ledger_account_handler_field_link.inc
+files[] = views/handlers/ledger_account_handler_field_operations.inc
+files[] = views/handlers/ledger_account_handler_field.inc
+files[] = views/handlers/ledger_account_plugin_argument_validate_account.inc
+
+
+; Information added by Drupal.org packaging script on 2014-11-12
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "ledger"
+datestamp = "1415802186"
+

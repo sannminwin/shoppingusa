@@ -1,0 +1,461 @@
+<?php
+
+/**
+ * @file
+ * Ledger Account Entry UI
+ */
+
+/***************************************************************
+ * Constants
+ * *************************************************************/
+
+/**
+ * We provide these button labels as constants because they are used in a few places to determine which button was pressed.
+ */
+define('LEDGER_ACCOUNT_ENTRY_UI_ADD_BUTTON_LABEL', 'Add account entry');
+define('LEDGER_ACCOUNT_ENTRY_UI_REMOVE_BUTTON_LABEL', 'Remove');
+
+/***************************************************************
+ * Drupal core hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_menu().
+ */
+function ledger_account_entry_ui_menu() {
+  $items = array();
+
+  // Account entry settings.
+  $items['admin/config/ledger/account_entry'] = array(
+    'title' => 'Account entry settings',
+    'description' => 'Configure general account entry settings, fields, and displays.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ledger_account_entry_settings_form'),
+    'access arguments' => array('administer ledger'),
+  );
+  $items['admin/config/ledger/account_entry/settings'] = array(
+    'title' => 'Settings',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -10,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function ledger_account_entry_ui_entity_info_alter(&$entity_info) {
+
+  // Expose the fields UI for account entries.
+  $entity_info['ledger_account_entry']['bundles']['ledger_account_entry']['admin'] = array(
+    'path' => 'admin/config/ledger/account_entry',
+    'real path' => 'admin/config/ledger/account_entry',
+    'access arguments' => array('administer ledger'),
+  );
+}
+
+/**
+ * Implements hook_elements().
+ */
+function ledger_account_entry_ui_element_info() {
+  return array(
+    'ledger_account_entry_manager' => array(
+      '#input' => TRUE,
+      '#tree' => TRUE,
+      '#process' => array('ledger_account_entry_ui_manager'),
+      '#element_validate' => array('ledger_account_entry_ui_manager_validate'),
+      '#theme' => array('ledger_account_entry_manager'),
+      '#theme_wrappers' => array('form_element'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_theme().
+ */
+function ledger_account_entry_ui_theme($existing, $type, $theme, $path) {
+  return array(
+    'ledger_account_entry_manager' => array(
+      'render element' => 'form',
+      'file' => 'ledger_account_entry_ui.theme.inc',
+    ),
+  );
+}
+
+/***************************************************************
+ * Account entry settings form
+ * *************************************************************/
+
+/**
+ * Form callback: ledger account entry settings form.
+ */
+function ledger_account_entry_settings_form($form, &$form_state) {
+
+  // For now, just return a little description.
+  $form['description'] = array(
+    '#markup' => 'Use the "Fields" and "Display" tabs above to customize account entries.',
+  );
+  return $form;
+}
+
+/***************************************************************
+ * Element callbacks
+ * *************************************************************/
+
+/**
+ * Generates form elements for an account entry manager.
+ */
+function ledger_account_entry_ui_manager($element, &$form_state) {
+
+  // Wrap the element in a div for AJAX replacement.
+  $element['#prefix'] = '<div id="ledger-account-entries">';
+  $element['#suffix'] = '</div>';
+
+  // Start an array of account entries to display.
+  $account_entries = array();
+
+  // Add in the default values, if there are any.
+  if (!empty($element['#default_value'])) {
+    foreach ($element['#default_value'] as $account_entry) {
+
+      // Don't add account entries that have been marked for deletion.
+      if (empty($form_state['remove_account_entries']) || !in_array($account_entry->eid, $form_state['remove_account_entries'])) {
+        $account_entries[$account_entry->eid] = $account_entry;
+      }
+    }
+  }
+
+  // If the user clicked "Add account entry", add blank entries for those.
+  if (!empty($form_state['add_account_entries'])) {
+    $account_entries += $form_state['add_account_entries'];
+  }
+
+  // Build form elements for each account entry.
+  if (!empty($account_entries)) {
+    foreach ($account_entries as $account_entry) {
+
+      // Determine what key to use for this account entry. If the user clicked the "Add account entry" button,
+      // the account entry will have a unique 6-digit hex code in its 'add' property. Use that so we can remove it easily
+      // if the user clicks "Remove". Otherwise, use the account entry id.
+      $key = (!empty($account_entry->add)) ? $account_entry->add : $account_entry->eid;
+
+      // Store the original account entry for later comparison.
+      $element['rows'][$key]['account_entry'] = array(
+        '#type' => 'value',
+        '#value' => $account_entry,
+      );
+
+      // Select checkbox
+      $element['rows'][$key]['select'] = array(
+        '#type' => 'checkbox',
+      );
+
+      // Description
+      $element['rows'][$key]['description'] = array(
+        '#type' => 'textfield',
+        '#default_value' => $account_entry->description,
+      );
+
+      // Account select list
+      $element['rows'][$key]['aid'] = array(
+        '#type' => 'select',
+        '#options' => ledger_account_select_options($element['#book_id']),
+        '#default_value' => $account_entry->aid,
+      );
+
+      // Calculate the in/out values of the account.
+      $in = '';
+      $out = '';
+      if ($account_entry->value > 0) {
+        $in = $account_entry->value;
+      }
+      elseif ($account_entry->value < 0) {
+        $out = str_replace('-', '', $account_entry->value);
+      }
+
+      // Value that went into the account
+      $element['rows'][$key]['in'] = array(
+        '#type' => 'textfield',
+        '#default_value' => $in,
+        '#size' => 10,
+      );
+
+      // Value that went out of the account
+      $element['rows'][$key]['out'] = array(
+        '#type' => 'textfield',
+        '#default_value' => $out,
+        '#size' => 10,
+      );
+    }
+  }
+
+  // Button for adding an account entry
+  $element['add'] = array(
+    '#type' => 'submit',
+    '#value' => t(LEDGER_ACCOUNT_ENTRY_UI_ADD_BUTTON_LABEL),
+    '#submit' => array('ledger_account_entry_ui_manager_add'),
+    '#ajax' => array(
+      'callback' => 'ledger_account_entry_ui_manager_ajax',
+      'wrapper' => 'ledger-account-entries',
+    ),
+  );
+
+  // Button for removing an account entry (only if there are entries to remove)
+  if (!empty($account_entries)) {
+    $element['remove'] = array(
+      '#type' => 'submit',
+      '#value' => t(LEDGER_ACCOUNT_ENTRY_UI_REMOVE_BUTTON_LABEL),
+      '#submit' => array('ledger_account_entry_ui_manager_remove'),
+      '#ajax' => array(
+        'callback' => 'ledger_account_entry_ui_manager_ajax',
+        'wrapper' => 'ledger-account-entries',
+      ),
+    );
+  }
+
+  return $element;
+}
+
+/**
+ * Ledger account entry manager validation.
+ */
+function ledger_account_entry_ui_manager_validate($element, &$form_state) {
+
+  // Don't validate if the user is simply adding/removing account entries.
+  if ($form_state['triggering_element']['#value'] != LEDGER_ACCOUNT_ENTRY_UI_ADD_BUTTON_LABEL && $form_state['triggering_element']['#value'] != LEDGER_ACCOUNT_ENTRY_UI_REMOVE_BUTTON_LABEL) {
+
+    // Keep a running tally of the overall manager balance.
+    $manager_balance = fraction();
+
+    // Loop through all the account entries.
+    if (!empty($element['rows'])) {
+      foreach (element_children($element['rows']) as $key) {
+
+        // Load the "in" and "out" field values into fractions.
+        $in_fraction = fraction_from_decimal($element['#value']['rows'][$key]['in']);
+        $out_fraction = fraction_from_decimal($element['#value']['rows'][$key]['out']);
+
+        // Determine the absolute value of the entry by subtracting the out from the in.
+        $value = fraction();
+        $value->add($in_fraction);
+        $value->subtract($out_fraction);
+
+        // Add the value to the running balance.
+        $manager_balance->add($value);
+
+        // Skip validation if this is a new account entry, and none of the values are filled in (it will simply be discarded).
+        if (!$element['rows'][$key]['account_entry']['#value']->eid && empty($element['#value']['rows'][$key]['aid']) && !$value) {
+          continue;
+        }
+
+        // Build the element name from the parents array.
+        $element_name = implode('][', $element['rows'][$key]['#array_parents']);
+
+        // Make sure the entry has an account.
+        if (empty($element['#value']['rows'][$key]['aid'])) {
+          form_set_error($element_name, 'Account entry must specify an account.');
+        }
+
+        // Make sure the entry has a value.
+        $numerator = $value->getNumerator();
+        if (empty($numerator)) {
+          form_set_error($element_name, 'Account entry must have a value.');
+        }
+      }
+
+      // Make sure the overall balance of the manager is zero.
+      $balance_numerator = $manager_balance->getNumerator();
+      if (!empty($balance_numerator)) {
+
+        // Notify the user that their account entries don't balance.
+        form_set_error(implode('][', $element['#array_parents']), 'The account entries do not balance. Please add/remove entries so the Debit and Credit columns net to zero.');
+      }
+    }
+  }
+}
+
+/**
+ * Submit handler for the "Add account entry" button.
+ *
+ * Increments the counter of account entries to add and rebuilds the form.
+ */
+function ledger_account_entry_ui_manager_add($form, &$form_state) {
+
+  // Grab a reference to the account entry manager element and values, using our handy-dandy recursive reference helper function!
+  $manager_element = _ledger_account_entry_ui_manager_parent($form, $form_state['triggering_element']['#parents'], 1);
+  $manager_values = _ledger_account_entry_ui_manager_parent($form_state['values'], $form_state['triggering_element']['#parents'], 1);
+
+  // Generate a unique random 6-digit hex string to use as the new account entry's array key.
+  do {
+    $key = mt_rand(0, 0xffffff);
+    $key = sprintf("%06x", $key);
+  } while (array_key_exists($key, $manager_values['rows']));
+
+  // Create a new blank account entry with the key in it's "add" property
+  // @see ledger_account_entry_ui_manager()
+  $account_entry = ledger_account_entry_new();
+  $account_entry->add = $key;
+
+  // Add the new account entry to the form state.
+  $form_state['add_account_entries'][$key] = $account_entry;
+
+  // Rebuild the form.
+  $form_state['rebuild'] = TRUE;
+}
+
+/**
+ * Submit handler for the "Remove" button.
+ *
+ * Removes account entries and rebuilds the form.
+ */
+function ledger_account_entry_ui_manager_remove($form, &$form_state) {
+
+  // Figure out which values belong to the account entry manager, using our handy-dandy recursive reference helper function!
+  $manager_values = _ledger_account_entry_ui_manager_parent($form_state['values'], $form_state['triggering_element']['#parents'], 1);
+
+  // Loop through the manager's rows.
+  if (!empty($manager_values['rows'])) {
+    foreach ($manager_values['rows'] as $key => $row) {
+
+      // If the row was selected for deletion...
+      if ($row['select']) {
+
+        // If the account entry has an id (if it exists in the database)...
+        if ($row['account_entry']->eid) {
+
+          // Flag the account entry for deletion.
+          $form_state['remove_account_entries'][] = $key;
+        }
+
+        // Or, if it's a temporary account_entry that hasn't been saved yet...
+        else {
+
+          // Remove them from the $form_state['add_account_entries']
+          unset($form_state['add_account_entries'][$key]);
+        }
+      }
+    }
+  }
+
+  // Rebuild the form.
+  $form_state['rebuild'] = TRUE;
+}
+
+/**
+ * Submit function for the account entry manager.
+ *
+ * Saves account entry entities to the database.
+ *
+ * Note that this function is not called directly by the manager element itself.
+ * It must be called from the submit function of the form that uses it, and passed
+ * the $form, $form_state, and a $parents array that describes the path to the element in the form.
+ */
+function ledger_account_entry_manager_submit($form, &$form_state, $parents, $transaction) {
+
+  // Figure out which values belong to the account entry manager, using our handy-dandy recursive reference helper function!
+  $manager_values = _ledger_account_entry_ui_manager_parent($form_state['values'], $parents);
+
+  // Loop through the manager rows.
+  if (!empty($manager_values['rows'])) {
+    foreach ($manager_values['rows'] as $row) {
+
+      // Store the account entry in an easier-to-read variable.
+      $account_entry = $row['account_entry'];
+
+      // Calculate the account entry value by adding the "in" and "out" fields
+      $in = fraction_from_decimal($row['in']);
+      $out = fraction_from_decimal($row['out']);
+      $value = fraction()->add($in)->subtract($out);
+
+      // Add the transaction id, if one doesn't already exist.
+      if (empty($account_entry->tid) && !empty($transaction->tid)) {
+        $account_entry->tid = $transaction->tid;
+      }
+
+      // Compare the form values to the original account entry to see if a save is necessary.
+      if ($account_entry->description != $row['description'] || $account_entry->aid != $row['aid'] || $account_entry->value != $value) {
+
+        // Reload the account entry from the database, if available.
+        // We do this because the balance recaluclation function may run during
+        // the transaction entity update hook, which will affect the account
+        // entry's balance. If we don't reload, we may accidentally overwrite
+        // the new balance with the old.
+        if (!empty($account_entry->eid)) {
+          $account_entry = ledger_account_entry_load($account_entry->eid);
+        }
+
+        // Update the values in the original account entry and save it.
+        $account_entry->description = $row['description'];
+        $account_entry->aid = $row['aid'];
+        $account_entry->value = $value->toDecimal(FRACTION_PRECISION_DEFAULT, TRUE);
+
+        // Save it.
+        ledger_account_entry_save($account_entry);
+      }
+    }
+  }
+
+  // If there are account entries to delete, delete them.
+  if (!empty($form_state['remove_account_entries'])) {
+    ledger_account_entry_delete_multiple($form_state['remove_account_entries']);
+  }
+}
+
+/***************************************************************
+ * AJAX callback
+ * *************************************************************/
+
+/**
+ * Account entry manager ajax callback.
+ */
+function ledger_account_entry_ui_manager_ajax($form, $form_state) {
+  return _ledger_account_entry_ui_manager_parent($form, $form_state['triggering_element']['#parents'], 1);
+}
+
+/***************************************************************
+ * Helper functions
+ * *************************************************************/
+
+/**
+ * Account entry manager's handy-dandy recursive reference helper function!
+ *
+ * Helps to figure out what element of a $form or $form_state array contains data account entry manager data,
+ * based on a known array of it's parents.
+ *
+ * This is used in validate, submit, and ajax callback functions used by the account entry manager in order to
+ * find itself in $form or $form_state, without having to worry about how deep in the form tree it is.
+ *
+ * It takes 3 arguments:
+ * @param $form_data - Either a $form or $form_state['values'] containing the account entry manager data (the form element, or the returned values, respectively).
+ * @param $parents - The #parents array (usually from a form state), which will be used for recusively drilling into $element to find the manager element's data.
+ * @param $trim - How many items should be trimmed off the end of the $parents array before processing.
+ *
+ * @return - Returns a reference to the manager's data inside $element.
+ *
+ * For examples of usage:
+ * @see ledger_account_entry_manager_validate()
+ * @see ledger_account_entry_manager_submit()
+ * @see ledger_account_entry_ui_manager_add()
+ * @see ledger_account_entry_ui_manager_remove()
+ * @see ledger_account_entry_ui_manager_ajax()
+ */
+function _ledger_account_entry_ui_manager_parent(&$form_data, $parents, $trim=0) {
+
+  // Trim items off the end of the $parents array.
+  $parents = array_slice($parents, 0, count($parents) - $trim);
+
+  // Store the return value as a reference to the $form_data.
+  $reference =& $form_data;
+
+  // Loop through the parents.
+  if (!empty($parents)) {
+    foreach ($parents as $key => $parent) {
+
+      // Set the reference one level deeper.
+      $reference =& $form_data[$parent];
+    }
+  }
+  return $reference;
+}
+

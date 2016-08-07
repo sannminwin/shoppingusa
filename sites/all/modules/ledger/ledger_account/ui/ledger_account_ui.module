@@ -1,0 +1,549 @@
+<?php
+
+/**
+ * @file
+ * Ledger Account UI
+ */
+
+/***************************************************************
+ * Drupal core hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function ledger_account_ui_entity_info_alter(&$entity_info) {
+
+  // Enable the entity API's admin UI for the ledger account type
+  if (!empty($entity_info['ledger_account_type'])) {
+    $entity_info['ledger_account_type'] += array(
+      'access callback' => 'ledger_account_access',
+      'module' => 'ledger_account',
+      'admin ui' => array(
+        'path' => 'admin/config/ledger/account-types',
+        'controller class' => 'EntityDefaultUIController',
+        'menu wildcard' => '%ledger_account_type',
+      ),
+    );
+  }
+
+  // Enable the entity API's admin UI for each account type
+  foreach (ledger_account_get_types() as $type => $info) {
+    $entity_info['ledger_account']['bundles'][$type] = array(
+      'label' => $info->label,
+      'admin' => array(
+        'path' => 'admin/config/ledger/account-types/manage/%ledger_account_type',
+        'real path' => 'admin/config/ledger/account-types/manage/' . $type,
+        'bundle argument' => 5,
+        'access arguments' => array('administer ledger'),
+      ),
+    );
+  }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ledger_account_ui_menu() {
+  $items = array();
+
+  // Note: the following pages are defined by default Views:
+  //   /ledger/accounts
+
+  // Create account
+  $items['ledger/account/add'] = array(
+    'title' => 'Create a ledger account',
+    'description' => 'Create a new ledger account.',
+    'page callback' => 'ledger_account_ui_add_page',
+    'access callback' => 'ledger_account_access',
+    'access arguments' => array('create'),
+  );
+
+  // Account add forms for each account type
+  foreach (ledger_account_get_types() as $account_type) {
+    $items['ledger/account/add/' . $account_type->type] = array(
+      'title' => $account_type->label,
+      'title callback' => 'check_plain',
+      'page callback' => 'ledger_account_ui_account_form_wrapper',
+      'page arguments' => array(NULL, 'create', $account_type->type),
+      'access callback' => 'ledger_account_access',
+      'access arguments' => array('create'),
+      'weight' => 10,
+    );
+  }
+
+  // Edit account
+  $items['ledger/account/%ledger_account/edit'] = array(
+    'title' => 'Edit account',
+    'page callback' => 'ledger_account_ui_account_form_wrapper',
+    'page arguments' => array(2, 3),
+    'access callback' => 'ledger_account_access',
+    'access arguments' => array('update', 2),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 10,
+    'context' => MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE,
+  );
+
+  // Delete account
+  $items['ledger/account/%ledger_account/delete'] = array(
+    'title' => 'Delete',
+    'page callback' => 'ledger_account_ui_account_form_wrapper',
+    'page arguments' => array(2, 3),
+    'access callback' => 'ledger_account_access',
+    'access arguments' => array('delete', 2),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 20,
+    'context' => MENU_CONTEXT_INLINE,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_menu_local_tasks_alter().
+ */
+function ledger_account_ui_menu_local_tasks_alter(&$data, $router_item, $root_path) {
+
+  // Add action links.
+  if ($root_path == 'admin/ledger/accounts' || $root_path == 'ledger/book/%' || $root_path == 'ledger/book/%/accounts') {
+    $item = menu_get_item('ledger/account/add');  // Load the menu item for the account add form
+    $item['localized_options']['query']['destination'] = current_path();  // Set the destination argument to the current path
+    if ($item['access']) {
+      $data['actions']['output'][] = array(
+        '#theme' => 'menu_local_action',
+        '#link' => $item,
+      );
+    }
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function ledger_account_ui_theme() {
+  return array(
+    'ledger_account_add_list' => array(
+      'variables' => array('content' => array()),
+      'file' => 'ledger_account_ui.theme.inc',
+    ),
+  );
+}
+
+/***************************************************************
+ * Ledger hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_ledger_book_ops().
+ */
+function ledger_account_ui_ledger_book_ops($bid) {
+  return array(l('Accounts', 'ledger/book/' . $bid . '/accounts'));
+}
+
+/***************************************************************
+ * Views hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_views_api().
+ */
+function ledger_account_ui_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'ledger_account_ui') . '/views',
+  );
+}
+
+/***************************************************************
+ * Page callbacks
+ * *************************************************************/
+
+/**
+ * Display a list of account types that the user can create.
+ */
+function ledger_account_ui_add_page() {
+  $item = menu_get_item();
+  $content = system_admin_menu_block($item);
+  return theme('ledger_account_add_list', array('content' => $content));
+}
+
+/**
+ * Wrapper function for the ledger_ui_account_form that serves as a page callback.
+ */
+function ledger_account_ui_account_form_wrapper($account, $op, $type=NULL) {
+
+  // If an account isn't provided, create a new one.
+  if (!$account) {
+    $account = ledger_account_new(array('type' => $type));
+  }
+
+  // Set the page title
+  drupal_set_title(t('Edit account: @account', array('@account' => ledger_account_title($account))));
+
+  // Create the breadcrumb for the page
+  $breadcrumb = array(
+    l(t('Home'), '<front>'),
+    l(t('Ledger'), 'ledger'),
+    l(t('Accounts'), 'ledger/accounts'),
+  );
+  drupal_set_breadcrumb($breadcrumb);
+
+  // Display the ledger account form.
+  if ($op == 'delete') {
+    return drupal_get_form('ledger_account_delete_form', $account);
+  }
+  else {
+    return drupal_get_form('ledger_account_form', $account, $op);
+  }
+}
+
+/**
+ * Ajax callback for rebuilding a list of accounts.
+ */
+function ledger_account_ajax($form, $form_state) {
+  return $form['accounts'];
+}
+
+/***************************************************************
+ * Account entity forms
+ * *************************************************************/
+
+/**
+ * Form callback: ledger account edit form.
+ */
+function ledger_account_form($form, &$form_state, $account, $op = 'edit') {
+
+  // Save the account object to the form values.
+  $form['ledger_account'] = array(
+    '#type' => 'value',
+    '#value' => $account,
+  );
+
+  // Account id
+  $form['aid'] = array(
+    '#type' => 'hidden',
+    '#default_value' => $account->aid,
+  );
+
+  // Bundle type
+  $form['type'] = array(
+    '#type' => 'hidden',
+    '#default_value' => $account->type,
+  );
+
+  // Account name
+  $form['name'] = array(
+    '#title' => t('Account name'),
+    '#type' => 'textfield',
+    '#default_value' => $account->name,
+    '#description' => t('The name of the account. Account type: ' . ledger_account_type_label($account->type)),
+    '#required' => TRUE,
+  );
+
+  // Account description
+  $form['description'] = array(
+    '#title' => t('Description'),
+    '#type' => 'textfield',
+    '#default_value' => $account->description,
+    '#description' => t('A brief description of the account.'),
+  );
+
+  // Load a list of books that the user has access to.
+  $books = ledger_book_user_books();
+
+  // Add a required field for assigning the account to a book.
+  $form['bid'] = array(
+    '#type' => 'select',
+    '#title' => t('Book'),
+    '#description' => t('Each account must be assigned to a book. Select a book from the list or ' . l('create a new book', 'ledger/book/add')),
+    '#options' => $books,
+    '#default_value' => $account->bid,
+    '#required' => TRUE,
+    '#ajax' => array(
+      'callback' => 'ledger_account_ajax',
+      'wrapper' => 'accounts-wrapper',
+    ),
+  );
+
+  // Parent accounts wrapper.
+  $form['accounts'] = array(
+    '#prefix' => '<div id="accounts-wrapper">',
+    '#suffix' => '</div>',
+  );
+
+  // Figure out which book to load accounts from based on priority.
+  $bid = 0;
+  // First, select the first available book (this will happen automatically in the browser for new accounts).
+  if (!empty($books)) {
+    reset($books);
+    $bid = key($books);
+  }
+  // Second, override with bid assigned to the account already.
+  if (!empty($account->bid)) {
+    $bid = $account->bid;
+  }
+  // Lastly, override with any values that have been set in this form.
+  if (!empty($form_state['values']['bid'])) {
+    $bid = $form_state['values']['bid'];
+  }
+
+  // Load the list of accounts for the book.
+  $accounts = ledger_account_select_options($bid);
+
+  // Parent account ID
+  $form['accounts']['pid'] = array(
+    '#title' => t('Parent account'),
+    '#type' => 'select',
+    '#options' => $accounts,
+    '#default_value' => $account->pid,
+    '#description' => t('The account\'s parent account.'),
+  );
+
+  // Add the Field API elements.
+  field_attach_form('ledger_account', $account, $form, $form_state);
+
+  // Form actions
+  $form['actions'] = array('#type' => 'actions');
+
+  // Submit button
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save account'),
+    '#weight' => 40,
+  );
+
+  return $form;
+}
+
+/**
+ * Validate callback for ledger_account_form().
+ */
+function ledger_account_form_validate(&$form, &$form_state) {
+
+  // Load account object from the form values.
+  $account = $form_state['values']['ledger_account'];
+
+  // Make sure the book ID is a valid book.
+  $bid = $form_state['values']['bid'];
+  $book = ledger_book_load($bid);
+  if (!isset($book->bid)) {
+    form_set_error('book', 'Invalid book.');
+  }
+
+  // Make sure the parent account ID is a valid account.
+  $pid = $form_state['values']['pid'];
+  if (!empty($pid)) {
+
+    // An account cannot be it's own parent.
+    if ($pid == $form_state['values']['aid']) {
+      form_set_error('pid', 'An account cannot be its own parent.');
+    }
+
+    else {
+
+      // Load the parent account
+      $parent_account = ledger_account_load($pid);
+
+      // Check to see if the parent account exists.
+      if (!isset($parent_account->aid)) {
+        form_set_error('pid', 'Invalid account.');
+      }
+    }
+  }
+
+  // Notify field widgets to validate their data.
+  field_attach_form_validate('ledger_account', $account, $form, $form_state);
+}
+
+/**
+ * Submit callback for ledger_account_form().
+ */
+function ledger_account_form_submit(&$form, &$form_state) {
+
+  // If the user is editing an account, merge changes to it.
+  if ($form_state['values']['ledger_account']->aid) {
+
+    // Load the account object from the form values.
+    $account = $form_state['values']['ledger_account'];
+
+    // Overwrite with new values.
+    $account->name = $form_state['values']['name'];
+    $account->description = $form_state['values']['description'];
+    $account->type = $form_state['values']['type'];
+    $account->bid = $form_state['values']['bid'];
+    $account->pid = $form_state['values']['pid'];
+  }
+
+  // If a new account is being created, build a new account object.
+  else {
+    $account = ledger_account_new($form_state['values']);
+  }
+
+  // Save any associated entity field data
+  field_attach_submit('ledger_account', $account, $form, $form_state);
+
+  // Save the account.
+  ledger_account_save($account);
+
+  // Display a message.
+  drupal_set_message(t('Account saved.'));
+
+  // Redirect
+  $form_state['redirect'] = 'ledger/book/' . $account->bid;
+}
+
+/**
+ * Form callback: confirmation form for deleting an account.
+ *
+ * @param $account
+ *   The account object to delete through the form.
+ *
+ * @return
+ *   The form array to confirm deletion..
+ *
+ * @see confirm_form()
+ */
+function ledger_account_delete_form($form, &$form_state, $account) {
+
+  // Save the account object to the form values.
+  $form['ledger_account'] = array(
+    '#type' => 'value',
+    '#value' => $account,
+  );
+
+  // Confirm form
+  $form = confirm_form($form,
+    t('Are you sure you want to delete the account "@name"?', array('@name' => $account->name)),
+    '',
+    '<p>' . t('Deleting this account cannot be undone.') . '</p>',
+    t('Delete'),
+    t('Cancel'),
+    'confirm'
+  );
+  return $form;
+}
+
+/**
+ * Submit callback for ledger_account_delete_form().
+ */
+function ledger_account_delete_form_submit($form, &$form_state) {
+
+  // Load the account object from the form values.
+  $account = $form_state['values']['ledger_account'];
+
+  // Delete the account and log the results.
+  /**
+   * @todo:
+   *   Make this check to see if the deletion succeeded, like Drupal Commerce does.
+   *   Commerce currently uses it's own custom fork of EntityAPIController which extends the delete() function to return TRUE/FALSE.
+   *   See commerce_order_order_delete_form_submit().
+   */
+  ledger_account_delete($account->aid);
+  drupal_set_message(t('Account "@name" has been deleted.', array('@name' => $account->name)));
+  watchdog('ledger_account', 'Deleted account "@name."', array('@name' => $account->name), WATCHDOG_NOTICE);
+
+  // Redirect
+  $form_state['redirect'] = 'ledger/book/' . $account->bid;
+}
+
+/***************************************************************
+ * Account entity type forms
+ * *************************************************************/
+
+/**
+ * Form callback: ledger account type edit form
+ */
+function ledger_account_type_form($form, &$form_state, $account_type, $op = 'edit') {
+
+  // Save the account type object to the form values.
+  $form['ledger_account_type'] = array(
+    '#type' => 'value',
+    '#value' => $account_type,
+  );
+
+  // If the account type is cloned, add "cloned" to it's label, and unset it's type.
+  if ($op == 'clone') {
+    $account_type->label .= ' (cloned)';
+    $account_type->type = '';
+  }
+
+  // Label
+  $form['label'] = array(
+    '#title' => t('Label'),
+    '#type' => 'textfield',
+    '#default_value' => isset($account_type->label) ? $account_type->label : '',
+    '#description' => t('The human-readable name of this account type.'),
+    '#required' => TRUE,
+  );
+
+  // Machine-readable type name.
+  $form['type'] = array(
+    '#type' => 'machine_name',
+    '#default_value' => isset($account_type->type) ? $account_type->type : '',
+    '#maxlength' => 32,
+    '#machine_name' => array(
+      'exists' => 'ledger_account_get_types',
+      'source' => array('type'),
+    ),
+    '#description' => t('A unique machine-readable name for this account type. It must only contain lowercase letters, numbers, and underscores.'),
+  );
+
+  // Fundamental account type.
+  $form['fundamental'] = array(
+    '#type' => 'select',
+    '#title' => t('Fundamental account type'),
+    '#description' => t('The fundamental type of account, used for reporting. If none is selected, accounts of this type will not be included in any reports.'),
+    '#options' => array(
+      'asset' => t('Asset'),
+      'liability' => t('Liability'),
+      'equity' => t('Equity'),
+      'income' => t('Income'),
+      'expense' => t('Expense'),
+      '0' => t('none'),
+    ),
+    '#default_value' => $account_type->fundamental ? $account_type->fundamental : NULL,
+    '#required' => TRUE,
+  );
+
+  $form['actions'] = array('#type' => 'actions');
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save account type'),
+    '#weight' => 40,
+  );
+
+  return $form;
+}
+
+/**
+ * Form API submit callback for the type form.
+ */
+function ledger_account_type_form_submit(&$form, &$form_state) {
+
+  // If the user is editing an account, merge changes to it.
+  if (!empty($form_state['values']['ledger_account_type']->id)) {
+
+    // Load the account type object from the form values.
+    $account_type = $form_state['values']['ledger_account_type'];
+
+    // Overwrite with the new values.
+    $account_type->label = $form_state['values']['label'];
+    $account_type->type = $form_state['values']['type'];
+    $account_type->fundamental = $form_state['values']['fundamental'];
+  }
+
+  // If a new account is being created, build a new account object.
+  else {
+    $account_type = ledger_account_type_new($form_state['values']);
+  }
+
+  // Save the account.
+  ledger_account_type_save($account_type);
+
+  // Display a message.
+  drupal_set_message(t('Account type saved.'));
+
+  // Provide a default redirect.
+  $form_state['redirect'] = 'admin/config/ledger/account-types';
+}
+

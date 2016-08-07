@@ -1,0 +1,462 @@
+<?php
+
+/**
+ * @file
+ * Ledger Transaction UI
+ */
+
+/***************************************************************
+ * Drupal core hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_menu().
+ */
+function ledger_transaction_ui_menu() {
+  $items = array();
+
+  // Note: the following pages are defined by default Views:
+  //   /ledger/account/%(/transactions)
+  //   /ledger/transactions
+
+  // Create transaction
+  $items['ledger/book/%ledger_book/transaction'] =
+  $items['ledger/account/%ledger_account/transaction'] =
+  $items['ledger/transaction/add'] = array(
+    'title' => 'Record a ledger transaction',
+    'description' => 'Record a new transaction in the ledger.',
+    'page callback' => 'ledger_transaction_ui_transaction_form_wrapper',
+    'page arguments' => array(NULL, 'add', 2),
+    'access callback' => 'ledger_transaction_access',
+    'access arguments' => array('create'),
+    'weight' => 10,
+  );
+
+  // Remove the last page argument from the simple /ledger/transaction/add item.
+  array_pop($items['ledger/transaction/add']['page arguments']);
+
+  // Edit transaction
+  $items['ledger/transaction/%ledger_transaction'] = array(
+    'title callback' => 'ledger_transaction_title',
+    'title arguments' => array(2),
+    'page callback' => 'ledger_transaction_ui_transaction_form_wrapper',
+    'page arguments' => array(2, 'edit'),
+    'access callback' => 'ledger_transaction_access',
+    'access arguments' => array('update', 2),
+  );
+  $items['ledger/transaction/%ledger_transaction/edit'] = array(
+    'title' => 'Edit',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => 0,
+    'context' => MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE,
+  );
+
+  // Delete transaction
+  $items['ledger/transaction/%ledger_transaction/delete'] = array(
+    'title' => 'Delete',
+    'page callback' => 'ledger_transaction_ui_transaction_form_wrapper',
+    'page arguments' => array(2, 3),
+    'access callback' => 'ledger_transaction_access',
+    'access arguments' => array('delete', 2),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 20,
+    'context' => MENU_CONTEXT_INLINE,
+  );
+
+  $items['admin/config/ledger/transaction'] = array(
+    'title' => 'Transaction settings',
+    'description' => 'Configure general transaction settings, fields, and displays.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ledger_transaction_settings_form'),
+    'access arguments' => array('administer ledger'),
+  );
+  $items['admin/config/ledger/transaction/settings'] = array(
+    'title' => 'Settings',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -10,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function ledger_transaction_ui_entity_info_alter(&$entity_info) {
+
+  // Expose the fields UI for transactions.
+  $entity_info['ledger_transaction']['bundles']['ledger_transaction']['admin'] = array(
+    'path' => 'admin/config/ledger/transaction',
+    'real path' => 'admin/config/ledger/transaction',
+    'access arguments' => array('administer ledger'),
+  );
+}
+
+/**
+ * Implements hook_menu_local_tasks_alter().
+ */
+function ledger_transaction_ui_menu_local_tasks_alter(&$data, $router_item, $root_path) {
+
+  // Add action links.
+  if ($root_path == 'admin/ledger/transactions' || $root_path == 'ledger/account/%' || $root_path == 'ledger/book/%/transactions') {
+    $item = menu_get_item('ledger/transaction/add');  // Load the menu item for the transaction add form
+    $item['localized_options']['query']['destination'] = current_path();  // Set the destinatin argument to the current path
+    if ($item['access']) {
+      $data['actions']['output'][] = array(
+        '#theme' => 'menu_local_action',
+        '#link' => $item,
+      );
+    }
+  }
+}
+
+/***************************************************************
+ * Ledger hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_ledger_book_ops().
+ */
+function ledger_transaction_ui_ledger_book_ops($bid) {
+  return array(l('Transactions', 'ledger/book/' . $bid . '/transactions'));
+}
+
+/***************************************************************
+ * Views hooks
+ * *************************************************************/
+
+/**
+ * Implements hook_views_api().
+ */
+function ledger_transaction_ui_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'ledger_transaction_ui') . '/views',
+  );
+}
+
+/***************************************************************
+ * Page callbacks
+ * *************************************************************/
+
+/**
+ * Wrapper function for the ledger_ui_transaction_form that serves as a page callback.
+ *
+ * @param ...
+ * @param $context_entity
+ *   An entity that has a 'bid' (ledger_book or ledget_account). If a valid
+ *   $transaction entity is passed in, this is ignored.
+ *
+ * @return
+ *   Returns a form for adding/editing/deleting the transaction.
+ */
+function ledger_transaction_ui_transaction_form_wrapper($transaction, $op, $context_entity = NULL) {
+
+  // If the transaction exists, load the book id up the tree.
+  if (!empty($transaction->tid)) {
+    $query = db_select('ledger_account_entry', 'lae');
+    $query->addField('la', 'bid');
+    $query->join('ledger_account', 'la', 'lae.aid = la.aid');
+    $query->condition('lae.tid', $transaction->tid);
+    $query->condition('lae.tid', '0', '<>');
+    $query->range(0, 1);
+    $transaction->bid = $query->execute()->fetchField();
+  }
+
+  // Otherwise, create a new empty entity.
+  else {
+    $transaction = ledger_transaction_new();
+
+    // If a context entity with a book id is available, get the book id.
+    if (!empty($context_entity->bid)) {
+      $transaction->bid = $context_entity->bid;
+    }
+  }
+
+  // Set the page title
+  drupal_set_title(t('Edit transaction: @transaction', array('@transaction' => ledger_transaction_title($transaction))));
+
+  // Create the breadcrumb for the page
+  $breadcrumb = array(
+    l(t('Home'), '<front>'),
+    l(t('Ledger'), 'ledger'),
+    l(t('Transactions'), 'ledger/transactions'),
+  );
+  drupal_set_breadcrumb($breadcrumb);
+
+  // Display the ledger transaction form.
+  if ($op == 'delete') {
+    return drupal_get_form('ledger_transaction_delete_form', $transaction);
+  }
+  else {
+    return drupal_get_form('ledger_transaction_form', $transaction, $op);
+  }
+}
+
+/**
+ * Ajax callback for rebuilding the account entries sub-form.
+ */
+function ledger_transaction_account_entries_ajax($form, $form_state) {
+  return $form['account_entries'];
+}
+
+/***************************************************************
+ * Transaction settings form
+ * *************************************************************/
+
+/**
+ * Form callback: ledger transaction settings form.
+ */
+function ledger_transaction_settings_form($form, &$form_state) {
+
+  // For now, just return a little description.
+  $form['description'] = array(
+    '#markup' => 'Use the "Fields" and "Display" tabs above to customize transactions.',
+  );
+  return $form;
+}
+
+/***************************************************************
+ * Transaction entity forms
+ * *************************************************************/
+
+/**
+ * Form callback: ledger transaction edit form.
+ */
+function ledger_transaction_form($form, &$form_state, $transaction, $op = 'edit') {
+
+  // Save the transaction object to the form values.
+  $form['ledger_transaction'] = array(
+    '#type' => 'value',
+    '#value' => $transaction,
+  );
+
+  // Transaction description
+  $form['description'] = array(
+    '#title' => t('Description'),
+    '#type' => 'textfield',
+    '#default_value' => $transaction->description,
+    '#description' => t('A brief description of the transaction.'),
+    '#required' => TRUE,
+    '#weight' => -10,
+  );
+
+  // Timestamp
+  $form['timestamp'] = array(
+    '#title' => t('Timestamp'),
+    '#type' => 'textfield',
+    '#default_value' => date('Y-m-d H:i:s', $transaction->timestamp),
+    '#description' => t('The timestamp of the transaction.'),
+    '#required' => TRUE,
+    '#weight' => -5,
+  );
+
+  // Use the date_popup module if it's available.
+  if (module_exists('date_popup')) {
+    $form['timestamp']['#type'] = 'date_popup';
+    $form['timestamp'] += array(
+      '#date_format' => 'Y-m-d H:i:s',
+      '#date_type' => DATE_UNIX,
+      '#date_timezone' => date_default_timezone(),
+    );
+  }
+
+  // The form's wrapper function will try to assign the transaction to a book.
+  // If it doesn't, display a form element for selecting the book.
+  if (!empty($transaction->bid)) {
+    $bid = $transaction->bid;
+
+    // Add the book id as a form value.
+    $form['bid'] = array(
+      '#type' => 'value',
+      '#value' => $bid,
+    );
+  }
+  else {
+
+    // Load a list of books that the user has access to.
+    $books = ledger_book_user_books();
+
+    // Add a required field for assigning the transaction to a book.
+    $form['bid'] = array(
+      '#type' => 'select',
+      '#title' => t('Book'),
+      '#description' => t('Each transaction must be assigned to a book. Select a book from the list or ' . l('create a new book', 'ledger/book/add')),
+      '#options' => $books,
+      '#default_value' => !empty($form_state['values']['bid']) ? $form_state['values']['bid'] : NULL,
+      '#required' => TRUE,
+      '#ajax' => array(
+        'callback' => 'ledger_transaction_account_entries_ajax',
+        'wrapper' => 'ledger-account-entries',
+      ),
+    );
+
+    // Override with any values that have been set in this form.
+    if (!empty($form_state['values']['bid'])) {
+      $bid = $form_state['values']['bid'];
+    }
+
+    // Otherwise, select the first available book (this will happen automatically in the browser for new accounts).
+    else {
+      reset($books);
+      $bid = key($books);
+    }
+  }
+
+  // Load the account entries associated with this transaction.
+  $query = db_select('ledger_account_entry', 'lae');
+  $query->addField('lae', 'eid');
+  $query->condition('lae.tid', $transaction->tid);
+  $query->condition('lae.tid', '0', '<>');
+  $result = $query->execute();
+  $account_entry_ids = array();
+  foreach ($result as $record) {
+    $account_entry_ids[] = $record->eid;
+  }
+  $transaction->account_entries = ledger_account_entry_load_multiple($account_entry_ids);
+
+  // Add the account entries manager element and submit function.
+  $form['account_entries'] = array(
+    '#type' => 'ledger_account_entry_manager',
+    '#title' => t('Account entries'),
+    '#default_value' => $transaction->account_entries,
+    '#book_id' => $bid,
+  );
+
+  // Add the Field API elements.
+  field_attach_form('ledger_transaction', $transaction, $form, $form_state);
+
+  // Form actions
+  $form['actions'] = array('#type' => 'actions');
+
+  // Submit button
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save transaction'),
+    '#weight' => 40,
+  );
+
+  return $form;
+}
+
+/**
+ * Validate callback for ledger_transaction_form().
+ */
+function ledger_transaction_form_validate(&$form, &$form_state) {
+
+  // Load transaction object from form values.
+  $transaction = $form_state['values']['ledger_transaction'];
+
+  // Convert the timestamp to unix-style and validate
+  $form_state['values']['timestamp'] = strtotime($form_state['values']['timestamp']);
+  if ($form_state['values']['timestamp'] === FALSE) {
+    form_set_error('timestamp', 'Invalid timestamp.');
+  }
+
+  // Make sure the book ID is a valid book.
+  $bid = $form_state['values']['bid'];
+  $book = ledger_book_load($bid);
+  if (!isset($book->bid)) {
+    form_set_error('book', 'Invalid book.');
+  }
+
+  // Notify field widgets to validate their data.
+  field_attach_form_validate('ledger_transaction', $transaction, $form, $form_state);
+}
+
+/**
+ * Submit callback for ledger_transaction_form().
+ */
+function ledger_transaction_form_submit(&$form, &$form_state) {
+
+  // If the user is editing a transaction, merge changes to it.
+  if ($form_state['values']['ledger_transaction']->tid) {
+
+    // Load the transaction object from the form values.
+    $transaction = $form_state['values']['ledger_transaction'];
+
+    // Overwrite with the new values.
+    $transaction->description = $form_state['values']['description'];
+    $transaction->timestamp = $form_state['values']['timestamp'];
+  }
+
+  // If a new transaction is being created, build a new transaction object.
+  else {
+    $transaction = ledger_transaction_new($form_state['values']);
+  }
+
+  // Notify field widgets.
+  field_attach_submit('ledger_transaction', $transaction, $form, $form_state);
+
+  // Save.
+  ledger_transaction_save($transaction);
+
+  // Execute the Account Entry Manager submit function.
+  ledger_account_entry_manager_submit($form, $form_state, array('account_entries'), $transaction);
+
+  // Display a message.
+  drupal_set_message(t('Transaction saved.'));
+
+  // If a book id is available, set a redirect to it.
+  if (!empty($form_state['values']['bid'])) {
+    $form_state['redirect'] = 'ledger/book/' . $form_state['values']['bid'] . '/transactions';
+  }
+}
+
+/**
+ * Form callback: confirmation form for deleting a transaction.
+ *
+ * @param $transaction
+ *   The transaction object to delete through the form.
+ *
+ * @return
+ *   The form array to confirm deletion..
+ *
+ * @see confirm_form()
+ */
+function ledger_transaction_delete_form($form, &$form_state, $transaction) {
+
+  // Save the transaction object to the form values.
+  $form['ledger_transaction'] = array(
+    '#type' => 'value',
+    '#value' => $transaction,
+  );
+
+  // Confirm form
+  $form = confirm_form($form,
+    t('Are you sure you want to delete the transaction "@description"?', array('@description' => $transaction->description)),
+    '',
+    '<p>' . t('Deleting this transaction cannot be undone.') . '</p>',
+    t('Delete'),
+    t('Cancel'),
+    'confirm'
+  );
+  return $form;
+}
+
+/**
+ * Submit callback for ledger_transaction_delete_form().
+ */
+function ledger_transaction_delete_form_submit($form, &$form_state) {
+
+  // Get the transaction object from the form values.
+  $transaction = $form_state['values']['ledger_transaction'];
+
+  // Delete the transaction and log the results.
+  /**
+   * @todo:
+   *   Make this check to see if the deletion succeeded, like Drupal Commerce does.
+   *   Commerce currently uses it's own custom fork of EntityAPIController which extends the delete() function to return TRUE/FALSE.
+   *   See commerce_order_order_delete_form_submit().
+   */
+  ledger_transaction_delete($transaction->tid);
+  drupal_set_message(t('Transaction "@description" has been deleted.', array('@description' => $transaction->description)));
+  watchdog('ledger_transaction', 'Deleted transaction "@description."', array('@description' => $transaction->description), WATCHDOG_NOTICE);
+
+  // Look up the transaction's book, and redirect to the book's transaction list.
+  $book_id = ledger_transaction_book($transaction->tid);
+  if (!empty($book_id)) {
+    $form_state['redirect'] = 'ledger/book/' . $book_id . '/transactions';
+  }
+}
+

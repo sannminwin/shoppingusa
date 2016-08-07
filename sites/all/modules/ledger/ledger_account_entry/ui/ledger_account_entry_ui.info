@@ -1,0 +1,15 @@
+name = "Account Entry UI"
+description = "Exposes default UI elements for managing ledger account entries."
+core = 7.x
+package = "Ledger"
+configure = admin/config/ledger/account_entry
+dependencies[] = fraction
+dependencies[] = ledger_account_entry
+
+
+; Information added by Drupal.org packaging script on 2014-11-12
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "ledger"
+datestamp = "1415802186"
+

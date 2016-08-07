@@ -1,0 +1,127 @@
+<?php
+
+/**
+ * @file
+ * Ledger Account install
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function ledger_account_schema() {
+  $schema['ledger_account'] = array(
+    'description' => 'Ledger accounts',
+    'fields' => array(
+      'aid' => array(
+        'description' => 'Account ID',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'pid' => array(
+        'description' => 'Parent account ID',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'bid' => array(
+        'description' => 'Book ID',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'name' => array(
+        'description' => 'Account name',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => FALSE,
+      ),
+      'description' => array(
+        'description' => 'Account description',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => FALSE,
+      ),
+      'type' => array(
+        'description' => 'Account type',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => FALSE,
+      ),
+    ),
+    'primary key' => array('aid'),
+    'indexes' => array(
+      'pid' => array('pid'),
+      'bid' => array('bid'),
+      'name' => array('name'),
+      'type' => array('type'),
+    ),
+  );
+  $schema['ledger_account_type'] = array(
+    'description' => 'Stores information about all defined ledger_account types.',
+    'fields' => array(
+      'id' => array(
+        'description' => 'Primary Key: Unique ledger_account type ID.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'fundamental' => array(
+        'description' => 'The fundamental account type of this ledger_account type.',
+        'type' => 'varchar',
+        'length' => 10,
+        'not null' => TRUE,
+        'default' => '0',
+      ),
+      'type' => array(
+        'description' => 'The machine-readable name of this ledger_account type.',
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+      ),
+      'label' => array(
+        'description' => 'The human-readable name of this ledger_account type.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+    ) + entity_exportable_schema_fields(),
+    'primary key' => array('id'),
+    'unique keys' => array(
+      'type' => array('type'),
+    ),
+  );
+  return $schema;
+}
+
+/**
+ * Implements hook_install().
+ */
+function ledger_account_install() {
+
+  // Create default account types.
+  $items['assets'] = entity_import('ledger_account_type', '{ "fundamental" : "asset", "type" : "assets", "label" : "Assets" }');
+  $items['equity'] = entity_import('ledger_account_type', '{ "fundamental" : "equity", "type" : "equity", "label" : "Equity" }');
+  $items['expenses'] = entity_import('ledger_account_type', '{ "fundamental" : "expense", "type" : "expenses", "label" : "Expenses" }');
+  $items['income'] = entity_import('ledger_account_type', '{ "fundamental" : "income", "type" : "income", "label" : "Income" }');
+  $items['liabilities'] = entity_import('ledger_account_type', '{ "fundamental" : "liability", "type" : "liabilities", "label" : "Liabilities" }');
+  foreach ($items as $item) {
+    ledger_account_type_save($item);
+  }
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ledger_account_uninstall() {
+
+  // Remove fields from account bundles.
+  $account_types = db_query("SELECT type FROM {ledger_account_type}")->fetchCol();
+  foreach ($account_types as $bundle) {
+    field_attach_delete_bundle('ledger_account', $bundle);
+  }
+}
+
